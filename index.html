@@ -43,6 +43,12 @@
   .pad .file-btn { background:rgba(0,0,0,.6); color:#fff; border:1px solid #888; padding:4px 10px; cursor:pointer; font:inherit; }
   #mapLabel { min-width:8em; text-align:center; text-shadow:0 0 3px #000; }
   #help { position:absolute; left:8px; bottom:8px; z-index:60; font:11px sans-serif; color:#fff; text-shadow:0 0 3px #000; }
+  #loginGate { position:absolute; inset:0; z-index:100; background:#111; color:#fff;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; font:14px sans-serif; }
+#loginGate input { width:260px; padding:6px; font-size:14px; }
+#loginGate button, #logoutBtn { padding:6px 12px; font-size:14px; cursor:pointer; }
+#loginMsg { color:#f66; font-size:13px; min-height:1.2em; }
+#logoutBtn { position:absolute; right:8px; top:8px; z-index:61; display:none; opacity:.6; }
 </style>
 </head>
 <body>
@@ -57,6 +63,16 @@
       <img id="rock" src="rock.png" alt="rock">
     </div>
   </div>
+  <div id="loginGate">
+  <h2>ログイン</h2>
+  <button onclick="doLoginGoogle()">Googleでログイン</button>
+  <div style="font-size:12px;color:#aaa">または</div>
+  <input type="email" id="loginEmail" placeholder="メールアドレス">
+  <input type="password" id="loginPassword" placeholder="パスワード">
+  <button onclick="doLogin()">メールでログイン</button>
+  <p id="loginMsg"></p>
+</div>
+<button id="logoutBtn" onclick="firebase.auth().signOut()">ログアウト</button>
  <div id="battleBack"></div>
   <canvas id="tilemap"></canvas>
   <canvas id="tilemapFront"></canvas>
@@ -72,7 +88,51 @@
      <label class="file-btn">マップ読み込み<input type="file" id="mapFile" accept=".txt,text/plain" hidden></label>
   </nav>
 </div>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
 <script>
+  /* ===== ログイン（チャットと同じFirebaseプロジェクト） ===== */
+const firebaseConfig = {
+  apiKey: "AIzaSyC1w5hFocUYvMf_0IEHluFst4u34YFprO4",
+  authDomain: "game-project1-f5cba.firebaseapp.com",
+  projectId: "game-project1-f5cba",
+  storageBucket: "game-project1-f5cba.firebasestorage.app",
+  messagingSenderId: "874546983569",
+  appId: "1:874546983569:web:1ed8de9c4237c335aa8530"
+};
+const fdb = firebase.firestore();
+let loginUser = null;
+
+const $ = id => document.getElementById(id);
+function doLoginGoogle() {
+  $('loginMsg').textContent = '';
+  firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider())
+    .catch(e => { $('loginMsg').textContent = 'エラー: ' + e.message; });
+}
+function doLogin() {
+  $('loginMsg').textContent = '';
+  firebase.auth().signInWithEmailAndPassword($('loginEmail').value.trim(), $('loginPassword').value)
+    .catch(e => { $('loginMsg').textContent = 'エラー: ' + e.message; });
+}
+firebase.auth().onAuthStateChanged(async user => {
+  if (!user) {
+    loginUser = null;
+    $('loginGate').style.display = 'flex';
+    $('logoutBtn').style.display = 'none';
+    return;
+  }
+  const doc = await fdb.collection('users').doc(user.uid).get();
+  if (!(doc.exists && doc.data().hikariUnlocked === true)) {
+    $('loginMsg').textContent = 'このユーザーはフレンド申請をしていないか、ブロックされています。';
+    await firebase.auth().signOut();
+    return;
+  }
+  loginUser = user;
+  $('loginMsg').textContent = '';
+  $('loginGate').style.display = 'none';
+  $('logoutBtn').style.display = 'block';
+});
 const STAGE_W = 1120, STAGE_H = 900;
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -625,6 +685,7 @@ function sfx(name) {
 const keys = { left: false, right: false, up: false };
 let lastHoriz = null, attackQueued = false, jumpPressed = false, debug = false;
 addEventListener('keydown', e => {
+    if (!loginUser || e.target.tagName === 'INPUT') return;   // ← この1行を先頭に追加
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyZ', 'Enter', 'NumpadEnter'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   if (e.code === 'KeyC') { if (!(pz.on && pz.phase === 'swap')) togglePause(); return; }   // 拾う/捨てる選択中はCを無視
@@ -2466,7 +2527,7 @@ function render(time) {
   for (const tile of tiles) { if (tile !== tiles5) drawTileBand(tile, getTileBandTopY(tile.offsetVar)); }
   wctx.clearRect(0, 0, wcanvas.width, wcanvas.height);
   updateAndDrawWind(dtw);
-  if (imagesReady && worldReady && !transitioning) { if (pz.on) pauseTick(dt); else { tickSkills(dt); update(dt); if (!isFrozen()) { updateZone(); updateEnemies(dt); updateBullets(dt); updateDrops(dt); updateChests(dt); } } }
+  if (imagesReady && worldReady && !transitioning && loginUser) { if (pz.on) pauseTick(dt); else { tickSkills(dt); update(dt); if (!isFrozen()) { updateZone(); updateEnemies(dt); updateBullets(dt); updateDrops(dt); updateChests(dt); } } }
   if (!transitioning && fadeEl.style.opacity !== '0') fadeEl.style.opacity = 0;   // 暗転の取り残し防止
 updateBattleBg();
   drawPlayer();

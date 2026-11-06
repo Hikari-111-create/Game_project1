@@ -1,0 +1,2477 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallax + Player</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .stage { position:relative; width:1120px; height:900px; }
+  :root {
+    --bg-split:60%; --bg-color:#222222;
+    --rock-top:30%; --rock-left:50%; --rock-offset-x:-49.3%; --rock-offset-y:-50%;
+    --sun-top:30%; --sun-left:50%; --sun-offset-x:-50%; --sun-offset-y:-30%; --sun-width:168px; --sun-height:88px;
+    --layerbg-top:35.8%; --layerbg-offset-y:360px;
+    --tiles-top:35.8%;
+    --tiles1-offset-y:260px; --tiles2-offset-y:230px; --tiles3-offset-y:200px; --tiles4-offset-y:180px; --tiles5-offset-y:159.9px;
+    --map-left:50%; --map-top:0px; --tile-size:70px;
+    --alt-step:60px; --scene-h:630px; --sky-h:600px;
+  }
+  #bg { position:absolute; top:0; left:0; width:1120px; height:600px; background-color:var(--bg-color); background-image:url('bg.png'); background-repeat:repeat-x; background-position:top left; background-size:auto calc(var(--bg-split) + var(--alt-y, 0px)); transition:background-size .6s ease; }
+  #sun { position:absolute; top:var(--sun-top); left:var(--sun-left); width:var(--sun-width); height:var(--sun-height); transform:translate(var(--sun-offset-x), var(--sun-offset-y)); pointer-events:none; }
+  #canvas, #wind { position:absolute; top:0; left:0; display:block; width:1120px; height:600px; }
+  #rock { position:absolute; top:var(--rock-top); left:var(--rock-left); width:1135px; height:104px; transform:translate(var(--rock-offset-x), var(--rock-offset-y)); pointer-events:none; }
+/* 敵出現ゾーン用の背景: 640x480 のgifを等倍で敷き詰める */
+#battleBack { position:absolute; left:0; top:0; width:1120px; height:630px; display:none; pointer-events:none; z-index:5;
+  background:#000 url('enemy/battle_back.gif') repeat top left; background-size:640px 480px; image-rendering:pixelated;
+  opacity:0; transition:opacity .4s ease; }
+  #scene { position:absolute; left:0; top:0; width:1120px; height:900px; clip-path:inset(0 0 calc(100% - var(--scene-h)) 0); pointer-events:none; }
+  #canvasTop { position:absolute; left:0; top:-600px; width:1120px; height:600px; display:block; pointer-events:none; }
+  #canvasBottom { position:absolute; left:0; top:600px; width:1120px; height:300px; display:block; pointer-events:none; }
+  #shift { position:absolute; left:0; top:0; width:1120px; height:900px; transform:translateY(var(--alt-y, 0px)); transition:transform .6s ease; }
+  #tilemap, #tilemapFront { position:absolute; left:var(--map-left); top:var(--map-top); transform:translateX(-50%); image-rendering:pixelated; pointer-events:none; z-index:10; }
+  #tilemapFront { z-index:11; }
+  /* プレイヤー: 手前タイル(11)の上、風(30)の下 */
+  #player { position:absolute; left:0; top:0; width:1120px; height:900px; image-rendering:pixelated; pointer-events:none; z-index:20; }
+  #wind { pointer-events:none; z-index:30; }
+  /* パリィ演出: #dim が全体を暗くし、#spot がプレイヤーと対象(弾/敵)だけを明るく描き直す */
+  #dim { position:absolute; inset:0; background:rgba(0,0,0,.6); opacity:0; pointer-events:none; z-index:35; }
+  #spot { position:absolute; left:0; top:0; width:1120px; height:900px; image-rendering:pixelated; pointer-events:none; z-index:40; }
+  /* マップ移動用の暗転 */
+  #fade { position:absolute; inset:0; background:#000; opacity:0; pointer-events:none; z-index:50; transition:opacity .12s ease; }
+  .pad { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); z-index:60; display:flex; flex-direction:column; align-items:center; gap:4px; font:12px sans-serif; color:#fff; }
+  .pad .file-btn { background:rgba(0,0,0,.6); color:#fff; border:1px solid #888; padding:4px 10px; cursor:pointer; font:inherit; }
+  #mapLabel { min-width:8em; text-align:center; text-shadow:0 0 3px #000; }
+  #help { position:absolute; left:8px; bottom:8px; z-index:60; font:11px sans-serif; color:#fff; text-shadow:0 0 3px #000; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div id="scene">
+    <div id="bg"></div>
+    <div id="shift">
+      <img id="sun" src="sun.gif" alt="sun">
+      <canvas id="canvasTop" width="1120" height="900"></canvas>
+      <canvas id="canvas" width="1120" height="900"></canvas>
+      <canvas id="canvasBottom" width="1120" height="450"></canvas>
+      <img id="rock" src="rock.png" alt="rock">
+    </div>
+  </div>
+ <div id="battleBack"></div>
+  <canvas id="tilemap"></canvas>
+  <canvas id="tilemapFront"></canvas>
+  <canvas id="player" width="1120" height="900"></canvas>
+  <canvas id="wind" width="1120" height="900"></canvas>
+  <div id="dim"></div>
+  <canvas id="spot" width="1120" height="900"></canvas>
+  <div id="fade"></div>
+  <div id="help">←→ 移動 / ↑ ジャンプ / Z 攻撃 / C メニュー(ポーチ・特殊アクション) / X 盾 / H 当たり判定表示 /</div>
+  <nav class="pad" aria-label="マップ情報">
+    <span id="mapLabel"></span>
+    <button class="file-btn" id="spawnBtn" type="button">弾幕スポーン</button>
+     <label class="file-btn">マップ読み込み<input type="file" id="mapFile" accept=".txt,text/plain" hidden></label>
+  </nav>
+</div>
+<script>
+const STAGE_W = 1120, STAGE_H = 900;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const wcanvas = document.getElementById('wind');
+const wctx = wcanvas.getContext('2d');
+
+// ================= 背景レイヤー =================
+const layerConfigs = [
+  { src: 'layer4.png', speed: 0.15 },
+  { src: 'layer3.png', speed: 0.3 },
+  { src: 'layer2.png', speed: 0.6 },
+  { src: 'layer1.png', speed: 0.9 },
+];
+const layers = layerConfigs.map(cfg => { const img = new Image(); img.src = cfg.src; return { img, speed: cfg.speed, x: 0 }; });
+
+const LAYERBG_SIZE = { w: 320, h: 180 };
+const layerBg = { img: new Image(), speed: 0.45, x: 0 };
+layerBg.img.src = 'layerbg.png';
+function getLayerBgTopY() {
+  const rs = getComputedStyle(document.documentElement);
+  return canvas.height * parseFloat(rs.getPropertyValue('--layerbg-top')) / 100 + (parseFloat(rs.getPropertyValue('--layerbg-offset-y')) || 0);
+}
+function drawLayerBg(dt) {
+  const img = layerBg.img;
+  if (!(img.complete && img.naturalWidth > 0)) return;
+  layerBg.x -= layerBg.speed * dt;
+  if (layerBg.x <= -LAYERBG_SIZE.w) layerBg.x += LAYERBG_SIZE.w;
+  if (layerBg.x > 0) layerBg.x -= LAYERBG_SIZE.w;
+  const bandTopY = getLayerBgTopY();
+  ctx.save();
+  ctx.translate(layerBg.x, bandTopY);
+  ctx.fillStyle = ctx.createPattern(img, 'repeat');
+  ctx.fillRect(-layerBg.x, 0, canvas.width + LAYERBG_SIZE.w, Math.max(LAYERBG_SIZE.h, canvas.height - bandTopY));
+  ctx.restore();
+}
+
+// ================= 静止レイヤー (tiles1〜5) =================
+const TILE_SIZE = { w: 320, h: 127 };
+const tileConfigs = [
+  { src: 'tiles5.png', offsetVar: '--tiles5-offset-y' },
+  { src: 'tiles4.png', offsetVar: '--tiles4-offset-y' },
+  { src: 'tiles3.png', offsetVar: '--tiles3-offset-y' },
+  { src: 'tiles2.png', offsetVar: '--tiles2-offset-y' },
+  { src: 'tiles1.png', offsetVar: '--tiles1-offset-y' },
+];
+const tiles = tileConfigs.map(cfg => { const img = new Image(); img.src = cfg.src; return { img, offsetVar: cfg.offsetVar }; });
+function getTileBandTopY(v) {
+  const rs = getComputedStyle(document.documentElement);
+  return canvas.height * parseFloat(rs.getPropertyValue('--tiles-top')) / 100 + (parseFloat(rs.getPropertyValue(v)) || 0);
+}
+
+// ================= 風 =================
+const WIND = {
+  count: 2, points: 50, width: 6, pixel: 2, levels: 10,
+  speed: [3, 5], life: [90, 300], yRange: [0.05, 0.6],
+  startColor: [255, 255, 255], startAlpha: 0.55,
+  endColor: [190, 230, 255], endAlpha: 0.0,
+};
+function rand(a, b) { return a + Math.random() * (b - a); }
+function createWind(initial) {
+  const baseY = canvas.height * rand(WIND.yRange[0], WIND.yRange[1]);
+  return {
+    x: initial ? rand(0, canvas.width) : -rand(0, 150), y: baseY, baseY,
+    vx: rand(WIND.speed[0], WIND.speed[1]),
+    amp: rand(8, 30), freq: rand(0.03, 0.08), phase: rand(0, Math.PI * 2),
+    life: rand(WIND.life[0], WIND.life[1]), t: 0, acc: 0, points: [],
+  };
+}
+const windStreaks = Array.from({ length: WIND.count }, () => createWind(true));
+function stepWind(s) {
+  s.life--; s.t++; s.x += s.vx;
+  s.y = s.baseY + Math.sin(s.t * s.freq + s.phase) * s.amp;
+  s.points.unshift({ x: s.x, y: s.y });
+  if (s.points.length > WIND.points) s.points.pop();
+}
+function drawWind(s) {
+  const pts = s.points, n = pts.length;
+  if (n < 2) return;
+  const PX = WIND.pixel;
+  const fade = Math.min(0, s.life / 10);
+  const lifeScale = s.life < 14 ? Math.max(0, s.life / 14) : 1;
+  const cells = new Map();
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pts[i], p1 = pts[i + 1];
+    const dx = p1.x - p0.x, dy = p1.y - p0.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const sidex = -dy / len, sidey = dx / len;
+    const steps = Math.max(1, Math.ceil(len / (PX / 2)));
+    for (let k = 0; k < steps; k++) {
+      const f = k / steps, prog = (i + f) / (n - 1);
+      const qprog = Math.floor(prog * WIND.levels) / WIND.levels;
+      const alpha = Math.min(1, Math.max(0, WIND.startAlpha + (WIND.endAlpha - WIND.startAlpha) * qprog + fade));
+      if (alpha <= 0) continue;
+      const cx = p0.x + dx * f, cy = p0.y + dy * f;
+      const size = Math.sin(prog * Math.PI) * WIND.width * lifeScale;
+      const col = WIND.startColor.map((c, j) => Math.round(c + (WIND.endColor[j] - c) * qprog));
+      for (let w = -size; w <= size + 0.001; w += PX / 2) {
+        const gx = Math.floor((cx + sidex * w) / PX), gy = Math.floor((cy + sidey * w) / PX);
+        const key = gx + ',' + gy, old = cells.get(key);
+        if (!old || old.a < alpha) cells.set(key, { gx, gy, a: alpha, c: col });
+      }
+    }
+  }
+  for (const c of cells.values()) {
+    wctx.fillStyle = `rgba(${c.c[0]},${c.c[1]},${c.c[2]},${c.a})`;
+    wctx.fillRect(c.gx * PX, c.gy * PX, PX, PX);
+  }
+}
+function updateAndDrawWind(dt) {
+  for (let k = 0; k < windStreaks.length; k++) {
+    let s = windStreaks[k];
+    s.acc += Math.min(dt, 3);
+    while (s.acc >= 1) { s.acc -= 1; stepWind(s); }
+    const tail = s.points[s.points.length - 1];
+    if (s.life < -10 || (tail && tail.x > canvas.width + 50)) s = windStreaks[k] = createWind(false);
+    drawWind(s);
+  }
+}
+
+// ================= タイルマップ (world.txt) =================
+const TILE = 40;
+const tileDisp = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tile-size')) || TILE;
+const TILE_COUNT = 242;
+const TILE_SRC = n => `tile/tile${String(n).padStart(3, '0')}.png`;
+const tmap = document.getElementById('tilemap');
+const tctx = tmap.getContext('2d');
+const tmapFront = document.getElementById('tilemapFront');
+const tfctx = tmapFront.getContext('2d');
+const labelEl = document.getElementById('mapLabel');
+const stageEl = document.querySelector('.stage');
+let maps = {}, fronts = {}, byPos = {}, curName = 'center', worldReady = false;
+let zones = {}, zoneRt = null;
+let ITEMS = [];   // world.txt の [itemlist:...] で定義される回復アイテム一覧 { name, desc, heal }
+const zoneQueue = ph => ph.flatMap(p => Array(p.n).fill(p.type));
+function zoneLocked() {   // ゾーン内に敵がいる/フェーズが残っている間は移動不可
+  if (!zoneRt || zoneRt.name !== curName) return false;
+  return !zoneRt.done || enemies.some(e => e.map === curName && e.state !== 'dead');
+}
+function updateZone() {
+  const z = zoneRt;
+  if (!z || z.name !== curName || z.done) return;
+  if (z.pending.length) {                         // 1フレームに1体ずつ出現(位置が取れなければ次フレームに再試行)
+    const en = spawnEnemy(z.pending[0]);
+    if (en) { en.zone = true; z.pending.shift(); sfx('enemy_appear'); }
+    return;
+  }
+  if (enemies.some(e => e.zone && e.map === curName && e.state !== 'dead')) return;
+  if (++z.idx >= z.phases.length) { z.done = true; sfx('enemy_clear'); spawnChest(); return; }
+  z.pending = zoneQueue(z.phases[z.idx]);
+}
+const tileImgs = {};
+
+function nameToPos(name) {
+  let x = 0, y = 0;
+  for (const m of name.matchAll(/(left|right|up|down)(\d+)/g)) {
+    const k = +m[2];
+    if (m[1] === 'left') x -= k; else if (m[1] === 'right') x += k;
+    else if (m[1] === 'up') y -= k; else y += k;
+  }
+  return [x, y];
+}
+// 現在のマップから見て (dx,dy) 方向に隣のマップがあればその名前を返す
+function neighbor(dx, dy) {
+ if (zoneLocked()) return null;
+  const [x, y] = nameToPos(curName);
+  return byPos[(x + dx) + ',' + (y + dy)] || null;
+}
+function parsePhase(s) {
+  const list = [];
+  for (const part of s.split(',')) {
+    const m = /^enemy_(book|knife|fist)=(\d+)$/i.exec(part.trim());
+    if (m && +m[2] > 0) list.push({ type: m[1].toLowerCase(), n: +m[2] });
+  }
+  return list;
+}
+// [itemlist:{name=item1,D=説明,healhp=30},{...}]  ('D＝' のように全角の＝でも可)
+function parseItems(s) {
+  const list = [];
+  for (const m of s.matchAll(/\{([^{}]*)\}/g)) {
+    const it = { name: '', desc: '', heal: 0, healtp: 0, defRate: 1, defT: 0, atk: 0, atkT: 0 };
+    for (const part of m[1].split(/,(?=\s*(?:name|d|healhp|heal|healtp|tp|def|deft|atk|atkt)\s*[=＝])/i)) {
+      const k = /^\s*([A-Za-z]+)\s*[=＝]\s*([\s\S]*?)\s*$/.exec(part);
+      if (!k) continue;
+      const key = k[1].toLowerCase(), v = k[2], n = Number(v);
+      if (key === 'name') it.name = v;
+      else if (key === 'd') it.desc = v;
+      else if (key === 'healhp' || key === 'heal') it.heal = n || 0;
+      else if (key === 'healtp' || key === 'tp') it.healtp = Math.max(0, n || 0);
+      else if (key === 'def') it.defRate = isFinite(n) && n >= 0 ? n : 1;
+      else if (key === 'deft') it.defT = Math.max(0, n || 0);
+      else if (key === 'atk') it.atk = Math.max(0, n || 0);
+      else if (key === 'atkt') it.atkT = Math.max(0, n || 0);
+    }
+    if (it.name) list.push(it);
+  }
+  return list;
+}
+function parseWorld(text) {
+  const out = { back: {}, front: {}, zones: {}, items: null }; let cur = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith(';')) continue;
+    const im = /^\[itemlist\s*:(.*)\]$/i.exec(line);
+    if (im) { out.items = parseItems(im[1]); continue; }   // アイテム定義行(マップの行には混ぜない)
+    const hm = line.match(/^\[map\.(.+)\]$/i);
+    if (hm) {
+      const toks = hm[1].trim().split(/\s+/);
+      let name = toks[0], front = false, ended = false, hasPhase = false;
+      const phases = [];
+      for (let i = 1; i < toks.length; i++) {
+        const t = toks[i];
+        if (/^to$/i.test(t)) name = toks[++i] || name;
+        else if (/^infrontlayer$/i.test(t)) front = true;
+        else if (/^phase=end$/i.test(t)) { ended = true; hasPhase = true; }
+        else {
+          const pm = /^phase([1-3]):(.*)$/i.exec(t);
+          if (pm) { hasPhase = true; const p = parsePhase(pm[2]); if (p.length) phases[+pm[1] - 1] = p; }
+        }
+      }
+      const target = front ? out.front : out.back;
+      cur = (hasPhase && target[name]) || (target[name] = []);   // フェーズ指定行は既存マップを上書きしない
+      const list = phases.filter(Boolean);
+      if (ended && list.length) out.zones[name] = list.slice(0, 3);   // end が無いとゾーン無効
+      continue;
+    }
+    if (cur && line) cur.push(line.split(/[\s,]+/));
+  }
+  for (const k of Object.keys(out.back))  if (!out.back[k].length)  delete out.back[k];   // タイル無しの行は捨てる
+  for (const k of Object.keys(out.front)) if (!out.front[k].length) delete out.front[k];
+  return out;
+}
+function loadWorld(text) {
+  const w = parseWorld(text); maps = w.back; fronts = w.front; zones = w.zones; byPos = {};
+chests.length = 0;
+  ITEMS = w.items || [];
+  for (let i = pouch.length - 1; i >= 0; i--) if (!ITEMS[pouch[i]]) pouch.splice(i, 1);   // 定義が無くなったアイテムは除去
+  for (let i = drops.length - 1; i >= 0; i--) if (!ITEMS[drops[i].id]) drops.splice(i, 1);
+  const names = new Set([...Object.keys(maps), ...Object.keys(fronts)]);
+  for (const n of names) byPos[nameToPos(n).join(',')] = n;
+  goTo(names.has('center') ? 'center' : [...names][0]);
+  worldReady = true;
+}
+function tileImg(n) {
+  if (!tileImgs[n]) { const i = new Image(); i.onload = drawMap; i.src = TILE_SRC(n); tileImgs[n] = i; }
+  return tileImgs[n];
+}
+function parseTok(tok) {
+  if (/^a$/i.test(tok)) return null;
+  const m = /^(\d+)([rv]*)$/i.exec(tok);
+  if (!m || +m[1] > TILE_COUNT) return null;
+  const fl = m[2].toLowerCase();
+  return { n: +m[1], fx: fl.includes('r'), fy: fl.includes('v') };
+}
+function drawLayer(cv, cx, rows) {
+  if (!rows) { cv.style.display = 'none'; return; }
+  cv.style.display = '';
+  const cols = Math.max(...rows.map(r => r.length));
+  cv.width = cols * TILE; cv.height = rows.length * TILE;
+  cv.style.width = cols * tileDisp() + 'px';
+  cv.style.height = rows.length * tileDisp() + 'px';
+  rows.forEach((row, y) => row.forEach((tok, x) => {
+    const t = parseTok(tok); if (!t) return;
+    const im = tileImg(t.n);
+    if (im.complete && im.naturalWidth) {
+      cx.save();
+      cx.translate(x * TILE + (t.fx ? TILE : 0), y * TILE + (t.fy ? TILE : 0));
+      cx.scale(t.fx ? -1 : 1, t.fy ? -1 : 1);
+      cx.drawImage(im, 0, 0, TILE, TILE);
+      cx.restore();
+    }
+  }));
+}
+function drawMap() {
+  drawLayer(tmap, tctx, maps[curName]);
+  drawLayer(tmapFront, tfctx, fronts[curName]);
+}
+
+// ---- 当たり判定: 手前レイヤー(infrontlayer)のタイルだけが固い ----
+const sol = { g: [], ox: 0, oy: 0, T: 70 };
+// 指定マップの当たり判定グリッドと配置オフセットを計算(DOM計測なし)
+function solidFor(name) {
+  const T = tileDisp(), rows = fronts[name];
+  if (!rows) return { g: [], ox: 0, oy: 0, T };
+  const cols = Math.max(...rows.map(r => r.length));
+  const cs = getComputedStyle(document.documentElement);
+  const ml = cs.getPropertyValue('--map-left').trim();
+  const left = ml.endsWith('%') ? STAGE_W * parseFloat(ml) / 100 : (parseFloat(ml) || 0);
+  const top = parseFloat(cs.getPropertyValue('--map-top')) || 0;
+  return { g: rows.map(r => r.map(tok => !!parseTok(tok))), ox: left - cols * T / 2, oy: top, T };
+}
+function buildSolid() { Object.assign(sol, solidFor(curName)); }
+
+const sceneEl = document.getElementById('scene');
+// ================= 敵出現ゾーン中の背景切り替え =================
+const battleEl = document.getElementById('battleBack');
+let battleOn = false;
+const BATTLE_FADE_MS = 400;   // CSS の #battleBack transition と合わせる
+let battleTimer = null;
+function updateBattleBg() {
+  const on = zoneLocked();            // ゾーン内に敵がいる/フェーズが残っている間
+  if (on === battleOn) return;
+  battleOn = on;
+  clearTimeout(battleTimer);
+  if (on) {
+    // 出現: 通常背景は即座に隠し、バトル背景を display → 次フレームで opacity 1
+    battleEl.style.display = 'block';
+    sceneEl.style.display = 'none';
+    tmap.style.visibility = 'hidden';
+    wcanvas.style.visibility = 'hidden';
+    void battleEl.offsetWidth;        // display 切り替え直後に強制リフロー(transition を効かせる)
+    battleEl.style.opacity = 1;
+  } else {
+    // 終了: 通常背景を戻したうえで、バトル背景を上からフェードアウト
+    sceneEl.style.display = '';
+    tmap.style.visibility = '';
+    wcanvas.style.visibility = '';
+    battleEl.style.opacity = 0;
+    battleTimer = setTimeout(() => {
+      if (!battleOn) battleEl.style.display = 'none';
+    }, BATTLE_FADE_MS);
+  }
+}
+function updateAltitude() {
+  const cs = getComputedStyle(document.documentElement);
+  const num = v => parseFloat(cs.getPropertyValue(v)) || 0;
+  const sunTop = stageEl.offsetHeight * num('--sun-top') / 100 + num('--sun-height') * num('--sun-offset-y') / 100;
+  const maxShift = num('--sky-h') - sunTop + 2;
+  const up = Math.max(0, -nameToPos(curName)[1]);
+  sceneEl.style.setProperty('--alt-y', Math.min(up * num('--alt-step'), maxShift) + 'px');
+}
+function goTo(name) {
+  if (!maps[name] && !fronts[name]) return;
+  curName = name; labelEl.textContent = 'map.' + name;
+const zp = zones[name];
+zoneRt = zp ? { name, phases: zp, idx: 0, pending: zoneQueue(zp[0]), done: false } : null;
+    if (typeof bullets !== 'undefined') bullets.length = 0;
+   if (typeof pGhosts !== 'undefined') pGhosts.length = 0;
+  if (typeof P !== 'undefined' && P.state === 'charge') { endChargeAtk(); P.state = 'idle'; P.phase = null; }
+   drawMap(); buildSolid(); updateAltitude(); updateBattleBg();
+  if (typeof settle === 'function') settle();
+}
+
+// ================= マップ移動(暗転) =================
+const fadeEl = document.getElementById('fade');
+const FADE_MS = 120, HOLD_MS = 40;   // CSS の #fade transition も FADE_MS に合わせる
+let transitioning = false;
+let edgeLock = 0;   // マップ移動直後に端判定を無効にする残り秒数
+function transitionTo(name, apply) {
+  if (transitioning) return;
+  transitioning = true;
+  jumpPressed = false;
+  fadeEl.style.opacity = 1;                       // 暗転
+  setTimeout(() => {
+    try {
+      if (apply) apply();                         // 先にプレイヤー位置を更新
+      goTo(name);                                 // 切替 (内部でsettleされる)
+    } catch (err) {
+      console.error(err);                         // 例外が出ても必ず明転させる
+    }
+    setTimeout(() => {
+      fadeEl.style.opacity = 0;                   // 明転
+      edgeLock = 0.3;                             // 直後の再トリガー防止
+      transitioning = false;
+    }, HOLD_MS);
+  }, FADE_MS);
+}
+
+document.getElementById('mapFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (f) f.text().then(loadWorld);
+});
+fetch('world.txt').then(r => { if (!r.ok) throw 0; return r.text(); }).then(loadWorld)
+  .catch(() => { labelEl.textContent = '「マップ読み込み」でworld.txtを選択'; });
+
+// ================= プレイヤー設定 =================
+const CONFIG = {
+  folder: 'player', uiFolder: 'player', enemyFolder: 'enemy',
+  itemFolder: 'player',   // item.png の置き場所(フォルダ名)
+  comboKeepTime: 2, comboCooldown: 0.4,
+  uiX: 16, uiY: 16, uiScale: 2, dimAlpha: 0.45,
+  tpX: 16, tpY: 110, tpScale: 2,   // TPゲージの位置・拡大率(微調整用)
+  hpMax: 290, barOnTop: true, trailDelay: 0.4, trailSpeed: 90,
+  knockbackY: 280, airKnockbackX: 80, slideSpeed: 250,
+  frameDelay: 12 / 100,
+  moveSpeed: 200, jumpPower: 720, gravity: 1100,
+  fpsLimit: 80,
+  scale: 2.8,
+  spawnX: 560,
+  upLift: 300,    // 上のマップへ移動した時に持ち上げる距離(px)
+  upBoost: 500,   // 上のマップへ移動した時の最低上向き速度
+};
+const TP = {
+  max: 100,
+  base: 4, top: 5,            // 画像の下余白(常に可視) / 上余白
+  gainShield: 20, gainSword: 10, gainAir: 30,   // パリィ種別ごとの増加量
+  showTime: 1,                // パリィ後に表示する秒数
+  trailDelay: 0.4, trailSpeed: 60,   // ハイライト後に定着するまでの待ち / 速度(TP/秒)
+  hiAlpha: 0.8,               // 増加分ハイライトの白さ
+  blinkSpeed: 8, blinkMax: 0.6,      // 満タン時の白点滅
+};
+// ---- 回復アイテム ----
+const HEAL = {
+  trailDelay: 0.5, trailSpeed: 80,   // 回復後ハイライトのまま待つ秒数 / 定着する速度(HP/秒)
+  hiAlpha: 0.85,                     // 回復分ハイライトの白さ
+};
+const ITEM = {
+  max: 10,
+  dropRate: 0.1,
+  scale: 2.5,
+  iconScale: 1.25,
+  margin: 14,
+  gravity: 1100, pop: 320, bob: 8,
+  animDelay: 20 / 60,   // ← 追加: コマ送り間隔(20tick)
+};
+const HITBOX = { x: 23, y: 30, w: 40, h: 33 };
+const HPUI = { bar: { x: 128, y: 7, len: 76, h: 9 }, num: { x: 137, y: 19, gap: 2 } };
+const SHEETS = {
+  player_run:  {w:99,h:90,x:1,y:1,gap:1,frames:6,  color:'#e06060'},
+  player_stop: {w:99,h:90,x:1,y:1,gap:1,frames:3,  color:'#e0a040'},
+  attack:      {w:99,h:90,x:1,y:1,gap:1,frames:14, color:'#c050e0'},
+  jumps:       {w:99,h:90,x:1,y:1,gap:1,frames:12, color:'#40a0e0'},
+  jumpsword:   {w:99,h:90,x:0,y:0,gap:5,frames:13, color:'#40e0a0'},
+  idles:       {w:99,h:90,x:1,y:1,gap:1,frames:3,  color:'#a0c050'},
+  damage:      {w:99,h:90,x:1,y:1,gap:1,frames:4,  color:'#ff3030'},
+  shields:     {w:99,h:90,x:1,y:1,gap:1,frames:7,  color:'#60c0ff'},
+  numbers:     {w:6, h:10,x:1,y:1,gap:1,frames:10, color:'#ffffff', folder:'ui'},
+  hp:          {w:210,h:40,x:0,y:0,gap:0,frames:1, color:'#334', folder:'ui'},
+  tp_bg:       {w:25,h:196,x:0,y:0,gap:0,frames:1, color:'#334', folder:'ui'},
+  tp:          {w:25,h:196,x:0,y:0,gap:0,frames:1, color:'#37c8ff', folder:'ui'},
+  // ---- 回復アイテム(item.png): 左1 / 上1 / 幅20 / 高さ19 / 隙間2 / 6コマ ----
+  item:        {w:20,h:19,x:1,y:1,gap:2,frames:6, color:'#ff6080', folder:'item'},
+  enemy_book:       {w:56,h:42,x:1,y:1,gap:1,frames:3, color:'#b080ff', folder:'enemy'},
+  book_projectile:  {w:16,h:20,x:0,y:0,gap:0,frames:1, color:'#ffcc40', folder:'enemy'},
+  // ---- 敵2(ナイフ) ----
+  enemy_knife:       {w:37,h:40,x:1,y:1,gap:6,frames:5, color:'#60d0a0', folder:'enemy'},
+  knife:             {w:40,h:12,x:0,y:0,gap:0,frames:1, color:'#d0d8e8', folder:'enemy'},   // 右向き
+  // 元絵が左向きなので faceLeft を指定
+  enemy_knife_parry: {w:42,h:28,x:1,y:1,gap:6,frames:3, color:'#ff8060', folder:'enemy', faceLeft:true},
+  // 突進前の回転消滅用。単体png。描画時に画像の実サイズを使うので w,h は仮の値
+  enemy_knife_spin: {w:38,h:32,x:0,y:0,gap:0,frames:1, color:'#60d0a0', folder:'enemy'},
+  enemy_fist: {w:57,h:40,x:0,y:0,gap:0,frames:1, color:'#ff9a40', folder:'enemy'},
+  // ---- 宝箱(treasure.png): 左1 / 上1 / 幅20 / 高さ20 / 隙間2 / 2コマ ----
+  treasure:    {w:20,h:20,x:1,y:1,gap:2,frames:2, color:'#ffd040', folder:'item'},
+};
+function frameRect(s, i) { return { sx: s.x + i * (s.w + s.gap), sy: s.y }; }
+
+// ---- 画像読み込み(無ければプレースホルダー) ----
+const images = {};
+function makePlaceholder(name) {
+  const s = SHEETS[name];
+  if (name === 'item') {
+    const cv = document.createElement('canvas'); cv.width = s.x + s.frames * (s.w + s.gap); cv.height = s.y + s.h;
+    const g = cv.getContext('2d');
+    const cols = ['#ff6080', '#ffb040', '#60d060', '#40b0ff', '#c070ff', '#e8e8e8'];
+    for (let i = 0; i < s.frames; i++) {
+      const { sx, sy } = frameRect(s, i);
+      g.fillStyle = cols[i % cols.length]; g.fillRect(sx + 4, sy + 5, s.w - 8, s.h - 6);
+      g.fillStyle = '#fff'; g.fillRect(sx + 7, sy + 1, s.w - 14, 4);
+      g.strokeStyle = '#000'; g.strokeRect(sx + 4.5, sy + 5.5, s.w - 9, s.h - 7);
+    }
+    return cv;
+  }
+  if (name === 'treasure') {
+    const cv = document.createElement('canvas'); cv.width = s.x + s.frames * (s.w + s.gap); cv.height = s.y + s.h;
+    const g = cv.getContext('2d');
+    for (let i = 0; i < s.frames; i++) {
+      const { sx, sy } = frameRect(s, i);
+      g.fillStyle = '#b07020'; g.fillRect(sx + 1, sy + 8, s.w - 2, s.h - 9);
+      g.fillStyle = i ? '#ffe070' : '#d09030';
+      if (i) g.fillRect(sx + 1, sy + 1, s.w - 2, 7); else g.fillRect(sx + 1, sy + 5, s.w - 2, 5);
+      g.strokeStyle = '#000'; g.strokeRect(sx + 1.5, sy + 8.5, s.w - 3, s.h - 10);
+    }
+    return cv;
+  }
+  if (name === 'tp_bg' || name === 'tp') {
+    const cv = document.createElement('canvas'); cv.width = s.w; cv.height = s.h;
+    const g = cv.getContext('2d');
+    if (name === 'tp_bg') {
+      g.fillStyle = 'rgba(20,24,40,0.9)'; g.fillRect(4, 5, s.w - 8, s.h - 9);
+      g.strokeStyle = '#8890b0'; g.strokeRect(4.5, 5.5, s.w - 9, s.h - 10);
+    } else {
+      g.fillStyle = '#ffb030'; g.fillRect(7, 5, s.w - 14, s.h - 5);
+    }
+    return cv;
+  }
+  if (name === 'hp') {
+    const cv = document.createElement('canvas'); cv.width = s.w; cv.height = s.h;
+    const g = cv.getContext('2d');
+    g.fillStyle = 'rgba(20,24,40,0.9)'; g.fillRect(0, 0, s.w, s.h);
+    g.strokeStyle = '#8890b0'; g.strokeRect(0.5, 0.5, s.w - 1, s.h - 1);
+    const b = HPUI.bar; g.fillStyle = '#10131f';
+    g.fillRect(b.x - 1, s.h - (b.y + b.h) - 1, b.len + 2, b.h + 2);
+    g.fillStyle = '#8890b0'; g.font = '10px monospace'; g.fillText('HP', 8, s.h - 12);
+    return cv;
+  }
+  if (name === 'book_projectile' || name === 'knife') {
+    const cv = document.createElement('canvas'); cv.width = s.w; cv.height = s.h;
+    const g = cv.getContext('2d'); g.fillStyle = s.color; g.fillRect(1, 1, s.w - 2, s.h - 2);
+    g.fillStyle = '#fff'; g.fillRect(4, 4, Math.max(2, s.w - 8), Math.max(2, Math.min(4, s.h - 8))); return cv;
+  }
+  if (name === 'numbers') {
+    const cv = document.createElement('canvas'); cv.width = s.x + s.frames * (s.w + s.gap); cv.height = s.y + s.h;
+    const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.font = 'bold 10px monospace'; g.textAlign = 'center';
+    for (let i = 0; i < s.frames; i++) g.fillText(i, s.x + i * (s.w + s.gap) + s.w / 2, s.y + s.h - 1);
+    return cv;
+  }
+  const cv = document.createElement('canvas');
+  cv.width = s.x + s.frames * s.w + (s.frames - 1) * s.gap; cv.height = s.y + s.h;
+  const g = cv.getContext('2d');
+  for (let i = 0; i < s.frames; i++) {
+    const { sx, sy } = frameRect(s, i);
+    g.fillStyle = s.color; g.globalAlpha = 0.35 + 0.6 * (i / s.frames);
+    g.fillRect(sx + 10, sy + 4, s.w - 20, s.h - 4);
+    g.globalAlpha = 1; g.fillStyle = '#fff';
+    g.fillRect(sx + s.w - 34, sy + 14, 12, 12);
+    g.font = 'bold 18px monospace'; g.textAlign = 'center';
+    g.fillText(i + 1, sx + s.w / 2 - 6, sy + s.h / 2 + 6);
+  }
+  return cv;
+}
+let imagesReady = false;
+Promise.all(Object.keys(SHEETS).map(name => new Promise(res => {
+  images[name] = { real: null, ph: makePlaceholder(name) };
+  const im = new Image();
+  im.onload = () => { images[name].real = im; res(); };
+  im.onerror = () => res();
+  const f = SHEETS[name].folder;
+  im.src = `${f === 'ui' ? CONFIG.uiFolder : f === 'enemy' ? CONFIG.enemyFolder : f === 'item' ? CONFIG.itemFolder : CONFIG.folder}/${name}.png`;
+}))).then(() => { imagesReady = true; spawn(); });
+function getImg(name) { return images[name].real || images[name].ph; }
+// ================= サウンド =================
+const SND_DIR = 'sound';
+const SND_FILES = {
+  enemy_appear: 'enemy_appear.wav', enemy_clear: 'enemy_clear.wav', parry: 'parry.wav',
+  noise: 'wing.wav', hurt: 'hurt.wav',
+  swing: 'swing.wav', heavy_swing: 'heavy_swing.wav', ultra_swing: 'ultra_swing.wav',defeat: 'defeat.wav', item: 'item.wav', item_use: 'item_use.wav',
+  pause: 'pause.wav', smallswing: 'smallswing.wav', plat_move: 'plat_move.wav', plat_select: 'plat_select.wav',chest: 'chest.wav', 
+};
+const SND_VOL = 0.6, SND_GAP = 0.05;   // 音量 / 同じ音の最短再生間隔(秒)
+const sounds = {}, sndLast = {};
+for (const k in SND_FILES) { const a = new Audio(`${SND_DIR}/${SND_FILES[k]}`); a.preload = 'auto'; sounds[k] = a; }
+function sfx(name) {
+  const a = sounds[name]; if (!a) return;
+  const now = performance.now() / 1000;
+  if (now - (sndLast[name] || 0) < SND_GAP) return;   // 同フレームの連打を抑える
+  sndLast[name] = now;
+  const c = a.cloneNode(); c.volume = SND_VOL;        // 重ねて鳴らせるようにクローン
+  c.play().catch(() => {});                           // 読み込み失敗・自動再生ブロックは無視
+}
+// ================= 入力 =================
+const keys = { left: false, right: false, up: false };
+let lastHoriz = null, attackQueued = false, jumpPressed = false, debug = false;
+addEventListener('keydown', e => {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyZ', 'Enter', 'NumpadEnter'].includes(e.code)) e.preventDefault();
+  if (e.repeat) return;
+  if (e.code === 'KeyC') { if (!(pz.on && pz.phase === 'swap')) togglePause(); return; }   // 拾う/捨てる選択中はCを無視
+    if (pz.on) { pauseKey(e.code); return; }
+    if (e.code === 'KeyX' && canStartCharge()) { startChargeAtk(); return; }
+  if (P.state === 'charge') {   // 溜め中は矢印キーで対象を切り替え
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.code];
+    if (d) { const bk = pz.target; pz.target = P.chTarget; selectTarget(d[0], d[1]); P.chTarget = pz.target; pz.target = bk; return; }
+  }
+  if (e.code === 'ArrowLeft') { keys.left = true; lastHoriz = 'left'; }
+  if (e.code === 'ArrowRight') { keys.right = true; lastHoriz = 'right'; }
+  if (e.code === 'ArrowUp') { keys.up = true; jumpPressed = true; }
+  if (e.code === 'KeyZ') onAttackPress();
+  if (e.code === 'KeyX') tryShield();
+  if (e.code === 'KeyH') debug = !debug;
+});
+addEventListener('keyup', e => {
+  if (e.code === 'KeyX' && P.state === 'charge') releaseCharge();
+  if (e.code === 'ArrowLeft') { keys.left = false; if (lastHoriz === 'left') lastHoriz = keys.right ? 'right' : null; }
+  if (e.code === 'ArrowRight') { keys.right = false; if (lastHoriz === 'right') lastHoriz = keys.left ? 'left' : null; }
+  if (e.code === 'ArrowUp') keys.up = false;
+});
+function inputDir() {
+  if (keys.left && keys.right) return lastHoriz === 'left' ? -1 : 1;
+  if (keys.left) return -1;
+  if (keys.right) return 1;
+  return 0;
+}
+
+// ================= プレイヤー =================
+const COMBO = [[0, 4], [5, 8], [9, 13]];
+const combo = { stage: 0, keepTimer: 0, cooldown: 0 };
+let swingId = 0;   // 攻撃を振るたびに増える(1振りで同じ敵に複数回ヒットしないため)
+// P.x = ヒットボックス中心X / P.y = ヒットボックス下端(足元)
+const P = { x: CONFIG.spawnX, y: 0, vy: 0, facing: 1, state: 'jump', phase: 'air', sheet: 'jumps', frame: 5, t: 0, airAttack: false, airFreeze: 0, boostT: 0, invT: 0 };
+let hp = CONFIG.hpMax;
+const ui = { on: false, alpha: 0, dim: 0, showT: 0, trail: CONFIG.hpMax, trailWait: 0,
+             hpShown: CONFIG.hpMax, hpWait: 0,   // hpShown: 回復ハイライトが定着済みのHP
+             tp: 0, tpShown: 0, tpWait: 0, tpShowT: 0, tpAlpha: 0, tpBlink: 0 };
+// 回復: HPは即座に増え、増えた分は白くハイライト → しばらくして青に定着(TPと同じ演出)
+function healPlayer(n) {
+  const before = hp;
+  if (n >= 0) hp = Math.min(CONFIG.hpMax, hp + n);
+  else hp = Math.max(1, hp + n);   // ← 最低HP1で止める
+  if (hp > before) { ui.hpWait = HEAL.trailDelay; ui.showT = Math.max(ui.showT, 1); }
+  else if (hp < before) { ui.trailWait = CONFIG.trailDelay; ui.showT = 1; }   // ダメージと同じ白い残像
+  return hp - before;   // 減った時は負の値
+}
+function tickHpUi(dt) {
+  if (ui.trail > hp) { if (ui.trailWait > 0) ui.trailWait -= dt; else ui.trail = Math.max(hp, ui.trail - CONFIG.trailSpeed * dt); }
+  else ui.trail = hp;
+  if (ui.hpShown > hp) ui.hpShown = hp;                       // ダメージは即反映
+  else if (ui.hpShown < hp) {
+    ui.showT = Math.max(ui.showT, 0.6);                       // 演出が終わるまでゲージを出しておく
+    if (ui.hpWait > 0) ui.hpWait -= dt; else ui.hpShown = Math.min(hp, ui.hpShown + HEAL.trailSpeed * dt);
+  }
+}
+function gainTp(n) {   // パリィ成功時にTP加算(増加分は先にハイライト→後で定着)
+  ui.tp = Math.min(TP.max, ui.tp + n);
+  ui.tpWait = TP.trailDelay; ui.tpShowT = TP.showTime;
+}
+function healTp(n) {   // 回復アイテム用(gainTp と同じ演出)
+  const before = ui.tp;
+  ui.tp = Math.min(TP.max, ui.tp + n);
+  if (ui.tp > before) { ui.tpWait = TP.trailDelay; ui.tpShowT = TP.showTime; }
+  return ui.tp - before;
+}
+function damagePlayer(n, fromDir, src) {
+  if (P.autoInv) {   // シールドチャージ演出中: 弾は全部ブロックして反射
+    if (src && bullets.includes(src) && !src.reflected) reflectBullet(src);
+    return false;
+  }
+  if (P.chargeInv) return false;                      // 溜め・リリース攻撃中は無敵
+  if (P.invT > 0) return false;                       // 無敵中はダメージ無し
+  if (SK.shieldReady) { shieldCharge(src); return false; }   // 状態に関係なく必ず発動
+  if (P.state !== 'damage' && SK.halfT > 0) n = Math.max(1, Math.round(n * SHIELD.damageRate));
+ if (BUFF.defT > 0) n = Math.max(1, Math.round(n * BUFF.defRate));
+
+  if (fromDir === undefined) fromDir = P.facing;
+  const before = hp;
+  hp = Math.max(0, hp - n);
+  if (hp < before) { ui.trailWait = CONFIG.trailDelay; ui.showT = 1; }
+  P.airAttack = false; attackQueued = false; airStage = 0;
+  combo.stage = 0; combo.keepTimer = 0;
+  sfx('hurt');
+  P.state = 'damage'; P.phase = 'air'; setAnim('damage'); P.frame = 0;
+  P.vy = -CONFIG.knockbackY; P.kvx = -fromDir;
+  return true;
+}
+
+// シールドチャージ: ダメージ無効化 → Xの盾パリィ演出 → 演出後に無敵解除
+function shieldCharge(src) {
+  sfx('parry');
+  SK.shieldReady = false; SK.halfT = SKILL_T;
+  P.autoInv = true; P.auto = true;
+  P.airAttack = false; attackQueued = false; airStage = 0;
+  combo.stage = 0; combo.keepTimer = 0; jumpPressed = false; P.vy = 0;
+  if (src && src.x !== undefined) P.facing = Math.sign(src.x - P.x) || P.facing;
+  P.state = 'shield'; P.phase = 'freeze'; P.sheet = 'shields'; P.frame = 2; P.t = 0; P.dur = null;
+  P.target = (src && (bullets.includes(src) || enemies.includes(src))) ? src : null;
+  fx.push({ k: 'ring', x: P.x, y: P.y - hbH() / 2, t: 0, d: 0.4 });
+  // 本来なら同時に当たっていた弾幕もまとめてブロック(反射)
+  const r = hitboxRect(), m = 60, zone = { x: r.x - m, y: r.y - m, w: r.w + m * 2, h: r.h + m * 2 };
+  for (const b of bullets) if (b !== src && !b.reflected && !b.aim && circleRect(b, zone)) reflectBullet(b);
+}
+// ---- 当たり判定ヘルパー ----
+const hbW = () => HITBOX.w * CONFIG.scale, hbH = () => HITBOX.h * CONFIG.scale;
+// s を渡すと別マップの当たり判定でも調べられる(省略時は現在のマップ)
+function boxHit(x, y, s = sol) {
+  const hw = hbW() / 2, h = hbH(), T = s.T;
+  const c0 = Math.floor((x - hw - s.ox) / T), c1 = Math.floor((x + hw - 0.001 - s.ox) / T);
+  const r0 = Math.floor((y - h - s.oy) / T), r1 = Math.floor((y - 0.001 - s.oy) / T);
+  for (let r = r0; r <= r1; r++) { const row = s.g[r]; if (!row) continue; for (let c = c0; c <= c1; c++) if (row[c]) return true; }
+  return false;
+}
+function moveX(dx) {
+  if (!dx) return;
+  P.x += dx;
+  if (!boxHit(P.x, P.y)) return;
+  const hw = hbW() / 2, T = sol.T;
+  if (dx > 0) P.x = sol.ox + Math.floor((P.x + hw - sol.ox - 0.001) / T) * T - hw;
+  else        P.x = sol.ox + (Math.floor((P.x - hw - sol.ox) / T) + 1) * T + hw;
+}
+// 下に隣のマップが無いなら、画面の下端に透明な床がある
+const hasFloor = () => !neighbor(0, 1);
+// 上に隣のマップが無いなら、画面の上端に透明な天井がある
+const hasCeiling = () => !neighbor(0, -1);
+function moveY(dy) {   // 'land' / 'head' / null
+  P.y += dy;
+  if (boxHit(P.x, P.y)) {
+    const T = sol.T;
+    if (dy > 0) { P.y = sol.oy + Math.floor((P.y - sol.oy - 0.001) / T) * T; P.vy = 0; return 'land'; }
+    P.y = sol.oy + (Math.floor((P.y - hbH() - sol.oy) / T) + 1) * T + hbH(); P.vy = 0; return 'head';
+  }
+  if (dy > 0 && hasFloor() && P.y > STAGE_H) { P.y = STAGE_H; P.vy = 0; return 'land'; }
+  if (dy < 0 && hasCeiling() && P.y - hbH() < 0) { P.y = hbH(); P.vy = 0; return 'head'; }
+  return null;
+}
+const standing = () => boxHit(P.x, P.y + 1) || (hasFloor() && P.y >= STAGE_H);
+function settle() {   // めり込んでいたら上へ押し出す
+  for (let i = 0; i < 500 && boxHit(P.x, P.y); i++) P.y -= 4;
+}
+function startFall() {
+  P.state = 'jump'; P.phase = 'air'; P.airAttack = false; attackQueued = false; airStage = 0;
+  setAnim('jumps'); P.frame = 5;
+}
+function spawn() {
+  endChargeAtk();
+  P.x = CONFIG.spawnX; P.y = 0; P.vy = 0; startFall(); settle();
+}
+
+function setAnim(sheet) { P.sheet = sheet; P.frame = 0; P.t = 0; P.dur = null; }
+function stepAnim() { const d = () => P.dur || animDelay(); while (P.t >= d()) { P.t -= d(); advance(); } }
+function onGround() { return P.state !== 'jump'; }
+
+function onAttackPress() {
+  if (P.state === 'shield' || P.state === 'charge' || P.lunge) return;
+  if (transitioning) return;
+  if (P.state === 'damage') return;
+  if (P.state === 'attack') { if (combo.stage < 3) attackQueued = true; return; }
+  if (P.airAttack) { attackQueued = true; return; }
+  if (P.state === 'jump') { if (P.phase === 'air') startAirAttack(); return; }
+  startAttack();
+}
+function startAttack() {
+  if (combo.cooldown > 0 && SK.rapidT <= 0) return;
+  combo.stage = combo.stage >= 3 ? 1 : combo.stage + 1;
+  combo.keepTimer = 0;
+  swingId++;
+  P.state = 'attack'; setAnim('attack'); attackQueued = false;
+  P.frame = COMBO[combo.stage - 1][0];
+  sfx(['swing', 'heavy_swing', 'ultra_swing'][combo.stage - 1]);   // 1~3段階目で音を変える
+}
+function endAttack() {
+  P.state = 'idle'; setAnim('idles');
+  if (inputDir() !== 0) { P.state = 'run'; setAnim('player_run'); }
+}
+function startAirAttack() {
+  sfx('ultra_swing');
+  swingId++; airStage = airStage >= 2 ? 1 : airStage + 1;
+  P.airAttack = true; attackQueued = false; setAnim('jumpsword');
+}
+function startJump() { sfx('smallswing'); P.state = 'jump'; P.phase = 'takeoff'; setAnim('jumps'); }
+function toGroundNormal() {
+  P.state = 'idle'; P.phase = null; P.airAttack = false;
+  if (inputDir() !== 0) { P.state = 'run'; setAnim('player_run'); } else setAnim('idles');
+}
+function airSheetFrame() { return P.vy < 0 ? 2 : 5; }
+
+function advance() {
+  const s = SHEETS[P.sheet], last = s.frames - 1;
+  switch (P.state) {
+    case 'idle': case 'run': P.frame = (P.frame + 1) % s.frames; break;
+    case 'stop':
+      if (P.frame < last) P.frame++;
+      else if (inputDir() !== 0) { P.state = 'run'; setAnim('player_run'); }
+      else { P.state = 'idle'; setAnim('idles'); }
+      break;
+    case 'attack': {
+      const end = COMBO[combo.stage - 1][1];
+      if (P.frame < end) P.frame++;
+      else if (combo.stage >= 3) { combo.stage = 0; combo.cooldown = CONFIG.comboCooldown; attackQueued = false; endAttack(); }
+      else if (attackQueued) startAttack();
+      else { combo.keepTimer = CONFIG.comboKeepTime; endAttack(); }
+      break;
+    }
+    case 'damage':
+      if (P.phase === 'land') { P.phase = 'recover'; setAnim('jumps'); P.frame = 10; }
+      else if (P.phase === 'recover') {
+        if (P.frame < 11) P.frame++;
+        else { P.state = 'idle'; P.phase = null; setAnim('idles'); if (inputDir() !== 0) { P.state = 'run'; setAnim('player_run'); } }
+      }
+      break;
+    case 'jump':
+      if (P.airAttack) {
+        if (P.frame < last) P.frame++;
+        else {
+          P.airAttack = false; setAnim('jumps'); P.frame = airSheetFrame();
+          if (attackQueued && P.phase === 'air') startAirAttack(); else airStage = 0;
+        }
+        break;
+      }
+      if (P.phase === 'takeoff') {
+        if (P.frame === 0) P.frame = 1;
+        else { P.phase = 'air'; P.vy = -CONFIG.jumpPower * (SK.speedT > 0 ? CH.jumpRate : 1); P.frame = 2; }
+      } else if (P.phase === 'air') {
+        const up = P.vy < 0, lo = up ? 2 : 5, hi = up ? 4 : 7;
+        if (P.frame < lo || P.frame > hi) P.frame = lo;
+        else P.frame = (P.frame < hi) ? P.frame + 1 : lo;
+      } else if (P.phase === 'land') {
+        if (P.frame < last) P.frame++; else toGroundNormal();
+      }
+      break;
+  }
+}
+
+// 画面端の処理
+//  ・隣のマップがあれば暗転して反対側から出現(出現位置が壁で埋まっていたら移動不可)
+//  ・隣のマップが無い方向は透明な壁(左右は位置クランプ、上下は moveY の天井/床)
+function checkEdges() {
+  const hw = hbW() / 2, hh = hbH();
+  let n = null, nx = P.x, ny = P.y, up = false;
+  if (edgeLock <= 0) {
+    if (P.x < 0 && (n = neighbor(-1, 0))) nx = P.x + STAGE_W;
+    else if (P.x > STAGE_W && (n = neighbor(1, 0))) nx = P.x - STAGE_W;
+    else if (P.y - hh > STAGE_H && (n = neighbor(0, 1))) ny = P.y - STAGE_H;
+    else if (P.y < 0 && P.vy < 0 && (n = neighbor(0, -1))) { ny = P.y + STAGE_H; up = true; }
+  }
+  if (n) {
+    nx = Math.max(hw, Math.min(STAGE_W - hw, nx));
+    const sn = solidFor(n);
+    // 上へ移動する時は少し浮上させる(塞がれていたら持ち上げなし)
+    if (up && !boxHit(nx, ny - CONFIG.upLift, sn)) ny -= CONFIG.upLift;
+    if (!boxHit(nx, ny, sn)) {                    // 出現位置が空いている時だけ移動
+      transitionTo(n, () => {
+        P.x = nx; P.y = ny;
+        if (up) P.vy = Math.min(P.vy, -CONFIG.upBoost);   // 上向きの勢いを確保
+      });
+      return;
+    }
+    // 壁があれば移動せず、下の端クランプで止まる
+  }
+  const openL = !n && neighbor(-1, 0), openR = !n && neighbor(1, 0);
+  P.x = Math.max(openL ? -Infinity : hw, Math.min(openR ? Infinity : STAGE_W - hw, P.x));
+  if (P.y < 0 && P.vy < 0 && neighbor(0, -1)) { P.y = 0; P.vy = 0; }
+  if (P.y - hh > STAGE_H + 300) spawn();
+}
+
+function update(dt) {
+  const dir = inputDir();
+  if (P.airFreeze > 0) {              // ジャンプ斬りパリィ演出中は全て停止
+    P.airFreeze -= dt;
+    if (P.airFreeze <= 0) {
+      P.airFreeze = 0;
+      if (P.lungeDmg != null) {   // 溜め突進の命中
+        const t = P.target, n = P.lungeDmg; P.lungeDmg = null;
+        if (t && enemies.includes(t) && t.state !== 'dead') {
+          fx.push({ k: 'slash', x: t.x, y: t.y, t: 0, d: 0.3 });
+          if (enemyHittable(t)) hitEnemy(t, n); else slashEnemy(t, n);
+          sfx('ultra_swing');
+        }
+        P.vy = -300; P.invT = 0.3;
+      } else resolveParry(P.target, ATTACK.airBonus, 'air');
+      P.target = null; if (P.invT < SHIELD.invincible) P.invT = SHIELD.invincible;
+    }
+    return;
+  }
+  if (edgeLock > 0) edgeLock -= dt;
+  if (combo.cooldown > 0) combo.cooldown = Math.max(0, combo.cooldown - dt);
+  if (P.invT > 0) P.invT = Math.max(0, P.invT - dt);
+  if (P.boostT > 0) P.boostT = Math.max(0, P.boostT - dt);   // パリィ後の加速
+  if (combo.keepTimer > 0) { combo.keepTimer -= dt; if (combo.keepTimer <= 0) { combo.keepTimer = 0; combo.stage = 0; } }
+
+  if (ui.showT > 0) ui.showT = Math.max(0, ui.showT - dt);
+  const showUI = ui.on || ui.showT > 0;
+  ui.alpha += ((showUI ? 1 : 0) - ui.alpha) * Math.min(1, dt * 12);   // ゲージの表示
+  ui.dim   += ((ui.on ? 1 : 0)  - ui.dim)   * Math.min(1, dt * 12);   // 暗転は C キーのときだけ
+  tickHpUi(dt);   // ダメージの白い残像 + 回復のハイライト
+
+  // ---- TPゲージ ----
+  if (ui.tpShowT > 0) ui.tpShowT = Math.max(0, ui.tpShowT - dt);
+  ui.tpAlpha += (((ui.on || ui.tpShowT > 0) ? 1 : 0) - ui.tpAlpha) * Math.min(1, dt * 12);
+  if (ui.tpShown < ui.tp) { if (ui.tpWait > 0) ui.tpWait -= dt; else ui.tpShown = Math.min(ui.tp, ui.tpShown + TP.trailSpeed * dt); }
+  else ui.tpShown = ui.tp;
+  ui.tpBlink += dt * TP.blinkSpeed;
+
+  if (P.state === 'damage') {
+    jumpPressed = false;
+    if (P.phase === 'air') {
+      moveX(Math.sign(P.kvx) * CONFIG.airKnockbackX * dt);
+      P.vy += CONFIG.gravity * dt;
+      if (moveY(P.vy * dt) === 'land') { P.phase = 'land'; setAnim('damage'); P.frame = 1; P.dur = 0.24; }
+    } else if (P.phase === 'land' && P.dur) {
+      moveX(Math.sign(P.kvx) * CONFIG.slideSpeed * Math.max(0, 1 - P.t / P.dur) * dt);
+    }
+    checkEdges();
+    P.t += dt; stepAnim();
+    return;
+  }
+
+  if (P.state === 'shield') { updateShield(dt, dir); return; }
+  if (P.state === 'charge') { updateCharge(dt); return; }
+  if (P.lunge) { updateLunge(dt); return; }
+  if (jumpPressed) { if (onGround() && P.state !== 'attack') startJump(); jumpPressed = false; }
+
+  if (P.state === 'idle' && dir !== 0) { P.state = 'run'; setAnim('player_run'); }
+  else if (P.state === 'run' && dir === 0) { P.state = 'stop'; setAnim('player_stop'); }
+  else if (P.state === 'stop' && dir !== 0) { P.state = 'run'; setAnim('player_run'); }
+
+  const locked = P.state === 'attack' || (P.state === 'jump' && P.phase === 'land');
+  if (!locked && dir !== 0) P.facing = dir;
+  if (!locked && (P.state === 'run' || P.state === 'jump')) moveX(dir * moveSpd() * dt);
+
+  // 足場が無くなったら落ちる
+  if ((P.state === 'idle' || P.state === 'run' || P.state === 'stop' || P.state === 'attack') && !standing()) { P.vy = 0; startFall(); }
+
+  if (P.state === 'jump' && P.phase === 'air') {
+    P.vy += CONFIG.gravity * dt;
+    if (moveY(P.vy * dt) === 'land') {
+      sfx('noise');   // 着地音
+      P.phase = 'land'; P.airAttack = false; attackQueued = false; airStage = 0;
+      setAnim('jumps'); P.frame = 8;
+    }
+  }
+  checkEdges();
+
+  P.t += dt; stepAnim();
+
+  if (P.state === 'jump' && P.phase === 'air' && !P.airAttack) {
+    const up = P.vy < 0;
+    if (up && P.frame > 4) P.frame = 2;
+    if (!up && P.frame < 5) P.frame = 5;
+  }
+  if (attackActive()) deflectByAttack();   // 攻撃判定(弾き返し + 突進中の敵のパリィ + スタン中の敵へ斬撃)
+}
+// ================= 特殊アクション / ポーチ =================
+const SKILL_T = 5;
+const SKILLS = {
+  1: { name: 'ラピッドスラッシュ', tp: 20, cd: 5, dmg: 1 },
+  2: { name: 'スピードバースト',   tp: 50, cd: 8 },
+  3: { name: 'シールドチャージ',   tp: 25, cd: 5 },
+};
+const SK = { cd: [0, 0, 0, 0], rapidT: 0, speedT: 0, shieldReady: false, halfT: 0 };
+const BUFF = { defRate: 1, defT: 0, atk: 0, atkT: 0 };   // アイテムによる一時バフ
+const atkBonus = () => BUFF.atkT > 0 ? BUFF.atk : 0;
+// phase: 'menu'(特殊アクション+ポーチ) / 'target'(対象選択) / 'swap'(ポーチ満杯: 捨てるか拾わないか)
+const pz = { on: false, phase: 'menu', skill: 0, target: null, sel: 0, scroll: 0, drop: null, msg: '', msgT: 0 };
+const fx = [];
+const pouch = [];   // 所持アイテム(ITEMS のインデックス)。最大 ITEM.max 個
+const drops = [];   // フィールドに落ちているアイテム
+const POUCH_VIS = 5, SWAP_VIS = 6, ROW_H = 26;
+const skillBuffed = () => SK.rapidT > 0 || SK.speedT > 0 || SK.shieldReady || SK.halfT > 0;
+const skillTargets = () => enemies.filter(e => e.map === curName && ['fly','attack','charge','fall','down','bounce'].includes(e.state));
+function skillBlock(n) {
+  const s = SKILLS[n];
+  if (skillBuffed()) return 'バフ中';
+  if (SK.cd[n] > 0) return 'CT ' + SK.cd[n].toFixed(1) + 's';
+  if (ui.tp < s.tp) return 'TP不足';
+  if (n === 1 && !skillTargets().length) return '対象なし';
+  return null;
+}
+function spendTp(n) { ui.tp = Math.max(0, ui.tp - n); ui.tpShown = Math.min(ui.tpShown, ui.tp); ui.tpShowT = TP.showTime; }
+function animDelay() {
+  if (SK.rapidT > 0 && (P.state === 'attack' || P.airAttack)) return 3 / 60;
+  if (SK.speedT > 0 && P.state === 'jump' && P.phase === 'takeoff') return CONFIG.frameDelay / 2;
+  return CONFIG.frameDelay;
+}
+function fixScroll(len, vis) {   // 選択行が見える範囲に入るようスクロール位置を調整
+  pz.scroll = Math.max(0, Math.min(pz.scroll, Math.max(0, len - vis)));
+  if (pz.sel < pz.scroll) pz.scroll = pz.sel;
+  if (pz.sel >= pz.scroll + vis) pz.scroll = pz.sel - vis + 1;
+}
+function togglePause() {
+  if (!pz.on) {
+        if (transitioning || isFrozen() || !imagesReady || !worldReady || P.state === 'charge' || P.lunge) return;
+    pz.on = true; pz.phase = 'menu'; pz.skill = 0; pz.target = null; pz.drop = null; pz.msgT = 0; ui.on = true; jumpPressed = false;
+    pz.sel = Math.max(0, Math.min(pz.sel, pouch.length - 1)); fixScroll(pouch.length, POUCH_VIS);
+    sfx('pause');   // メニューを開く
+  } else if (pz.phase === 'target') { fireSkill(pz.skill, pz.target); closePause(); }
+  // togglePause の最後の else
+  else { sfx('smallswing'); closePause(); }
+}
+function closePause() { pz.on = false; pz.phase = 'menu'; pz.target = null; pz.drop = null; ui.on = false; }
+function moveSel(dir) {
+  if (!pouch.length) return;
+  pz.sel = Math.max(0, Math.min(pouch.length - 1, pz.sel + dir));
+  fixScroll(pouch.length, POUCH_VIS);
+}
+function useItem(i) {
+  const id = pouch[i], it = ITEMS[id];
+  if (id === undefined) return;
+  if (!it) { pouch.splice(i, 1); moveSel(0); return; }
+  const hpFull = !it.heal || (it.heal > 0 ? hp >= CONFIG.hpMax : hp <= 1);
+  const tpFull = ui.tp >= TP.max || !it.healtp;
+  const hasDef = it.defT > 0 && it.defRate !== 1, hasAtk = it.atkT > 0 && it.atk > 0;   // ← 追加
+  if (hpFull && tpFull && !hasDef && !hasAtk) {                   
+    pz.msg = (it.heal && it.healtp) ? 'HPとTPは満タンです' : it.healtp ? 'TPは満タンです' : 'HPは満タンです';
+    pz.msgT = 1.2; return;
+  }
+  pouch.splice(i, 1);
+  sfx('item_use');   // アイテムを使う
+  const healed = healPlayer(it.heal);
+  const tpHealed = healTp(it.healtp);
+  if (hasDef) { BUFF.defRate = it.defRate; BUFF.defT = it.defT; }   // ← 追加(再使用で上書き・延長)
+  if (hasAtk) { BUFF.atk = it.atk; BUFF.atkT = it.atkT; }     
+  fx.push({ k: 'ring', x: P.x, y: P.y - hbH() / 2, t: 0, d: 0.5, color: '#7dff9a' });
+  const parts = [];
+  if (healed !== 0) parts.push('HP ' + (healed > 0 ? '+' : '') + healed);
+  if (tpHealed > 0) parts.push('TP +' + tpHealed);
+  if (hasDef) parts.push('防御×' + it.defRate);                      // ← 追加
+  if (hasAtk) parts.push('攻撃+' + it.atk);     
+  fx.push({ k: 'pop', x: P.x, y: P.y - hbH() - 10, t: 0, d: 1, text: parts.join('  '), color: '#8dffa8' });
+  pz.sel = Math.max(0, Math.min(pz.sel, pouch.length - 1)); fixScroll(pouch.length, POUCH_VIS);
+}
+function openSwap(d) {   // ポーチが一杯の時に落ちているアイテムに触れた
+  pz.on = true; pz.phase = 'swap'; pz.drop = d; pz.target = null; pz.msgT = 0;
+  pz.sel = pouch.length;   // 初期選択は「拾わない」(うっかり捨てない)
+  pz.scroll = 0; fixScroll(pouch.length + 1, SWAP_VIS);
+  ui.on = true; jumpPressed = false;
+}
+function swapKey(code) {
+  const total = pouch.length + 1;   // 末尾は「拾わない」
+  if (code === 'ArrowUp') pz.sel = Math.max(0, pz.sel - 1);
+  else if (code === 'ArrowDown') pz.sel = Math.min(total - 1, pz.sel + 1);
+  else if (code === 'Enter' || code === 'NumpadEnter') {
+    const d = pz.drop;
+    if (d && pz.sel < pouch.length && drops.includes(d)) {
+      pouch.splice(pz.sel, 1); pouch.push(d.id); drops.splice(drops.indexOf(d), 1);
+      sfx('item');   // 入れ替えて拾う
+      const it = ITEMS[d.id];
+      if (it) fx.push({ k: 'pop', x: P.x, y: P.y - hbH() - 10, t: 0, d: 1, text: it.name, color: '#9ff' });
+    } else if (d) d.skip = true;
+    closePause(); return;
+  } else if (code === 'KeyX') { if (pz.drop) pz.drop.skip = true; closePause(); return; }
+  fixScroll(total, SWAP_VIS);
+}
+function pauseKey(code) {
+  if (pz.phase === 'swap') { swapKey(code); return; }
+  const n = { Digit1: 1, Digit2: 2, Digit3: 3, Numpad1: 1, Numpad2: 2, Numpad3: 3 }[code];
+  if (n) {
+    if (skillBlock(n)) return;
+    sfx('plat_move');   // 特殊アクション選択
+    pz.skill = n; pz.phase = 'target';
+    if (n === 1) pz.target = skillTargets().sort((a, b) => Math.hypot(a.x - P.x, a.y - P.y) - Math.hypot(b.x - P.x, b.y - P.y))[0];
+    else pz.target = P;
+    return;
+  }
+// pauseKey の KeyX 行
+if (code === 'KeyX') {
+  if (pz.phase === 'target') { pz.phase = 'menu'; pz.skill = 0; pz.target = null; }
+  else { sfx('smallswing'); closePause(); }
+  return;
+}
+  if (pz.phase === 'menu') {   // ポーチ操作
+    if (code === 'ArrowUp' || code === 'ArrowDown') { moveSel(code === 'ArrowUp' ? -1 : 1); return; }
+    if (code === 'Enter' || code === 'NumpadEnter') { useItem(pz.sel); return; }
+  }
+  const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[code];
+  if (d && pz.phase === 'target' && pz.skill === 1) selectTarget(d[0], d[1]);
+}
+function selectTarget(dx, dy) {
+  const list = skillTargets(), cur = pz.target;
+  if (!list.includes(cur)) { pz.target = list[0]; return; }
+  let best = null, bs = Infinity;
+  for (const e of list) {
+    if (e === cur) continue;
+    const vx = e.x - cur.x, vy = e.y - cur.y, len = Math.hypot(vx, vy) || 1, dot = (vx * dx + vy * dy) / len;
+    if (dot < 0.3) continue;
+    if (len / dot < bs) { bs = len / dot; best = e; }
+  }
+  if (best) pz.target = best;
+}
+function fireSkill(n, t) {
+  if (!n || skillBlock(n)) return;
+  if (n === 1 && !skillTargets().includes(t)) return;
+  spendTp(SKILLS[n].tp); SK.cd[n] = SKILLS[n].cd;
+  sfx('plat_select');   // 特殊アクション実行
+  if (n === 1) rapidSlash(t);
+  else if (n === 2) SK.speedT = 10;
+  else SK.shieldReady = true;
+}
+function rapidSlash(e) {
+  P.facing = Math.sign(e.x - P.x) || P.facing;
+  if (P.state === 'idle' || P.state === 'run' || P.state === 'stop') {
+    combo.stage = 1; combo.keepTimer = 0; swingId++; attackQueued = false;
+    P.state = 'attack'; setAnim('attack'); P.frame = COMBO[0][0];
+    sfx('swing');
+  } else if (P.state === 'jump' && P.phase === 'air' && !P.airAttack) startAirAttack();
+  SK.rapidT = SKILL_T; combo.cooldown = 0;
+  fx.push({ k: 'slash', x: e.x, y: e.y, t: 0, d: 0.3 });
+// rapidSlash の最後
+hitEnemy(e, SKILLS[1].dmg + atkBonus());
+}
+function tickFx(dt) {
+  for (let i = fx.length - 1; i >= 0; i--) if ((fx[i].t += dt) >= fx[i].d) fx.splice(i, 1);
+}
+function tickSkills(dt) {
+  for (let n = 1; n <= 3; n++) SK.cd[n] = Math.max(0, SK.cd[n] - dt);
+  const hold = P.state === 'charge' || !!P.lunge;   // 溜め・リリース中はスピードバーストの時間を止める
+  SK.rapidT = Math.max(0, SK.rapidT - dt); if (!hold) SK.speedT = Math.max(0, SK.speedT - dt); SK.halfT = Math.max(0, SK.halfT - dt);
+  if (SK.rapidT > 0) combo.cooldown = 0;
+  BUFF.defT = Math.max(0, BUFF.defT - dt);
+  BUFF.atkT = Math.max(0, BUFF.atkT - dt);
+  tickGhosts(dt);
+  tickFx(dt);
+}
+// ================= スピードバースト: 残像 / 溜め攻撃 =================
+const CH = { maxT: 2.5, perSec: 6, jumpRate: 1.3 };   // 最大溜め秒 / 1秒あたり追加ダメージ / ジャンプ力倍率
+const pGhosts = []; let ghostT = 0;
+function tickGhosts(dt) {
+  for (let i = pGhosts.length - 1; i >= 0; i--) if ((pGhosts[i].life -= dt) <= 0) pGhosts.splice(i, 1);
+  if (SK.speedT <= 0 || isFrozen() || P.state === 'charge') { ghostT = 0; return; }
+  if ((ghostT -= dt) <= 0) {
+    ghostT = 0.04;
+    pGhosts.push({ x: P.x, y: P.y, facing: P.facing, sheet: P.sheet, frame: P.frame, life: 0.3, max: 0.3 });
+  }
+}
+function drawPGhosts(g) {
+  if (!imagesReady) return;
+  for (const gh of pGhosts) {
+    const s = SHEETS[gh.sheet], { sx, sy } = frameRect(s, Math.min(gh.frame, s.frames - 1));
+    const dw = s.w * CONFIG.scale, dh = s.h * CONFIG.scale, A = imageAnchor(gh);
+    g.save(); g.globalAlpha = 0.4 * gh.life / gh.max;
+    g.translate(A.cx, A.bottom); g.scale(gh.facing < 0 ? -1 : 1, 1);
+    g.drawImage(getImg(gh.sheet), sx, sy, s.w, s.h, -dw / 2, -dh, dw, dh);
+    g.restore();
+  }
+}
+const nearestOf = list => list.slice().sort((a, b) => Math.hypot(a.x - P.x, a.y - P.y) - Math.hypot(b.x - P.x, b.y - P.y))[0];
+function endChargeAtk() { P.chargeInv = false; P.lunge = null; P.chT = 0; P.chTarget = null; }
+function canStartCharge() {
+  if (transitioning || !imagesReady || !worldReady || pz.on || isFrozen() || SK.speedT <= 0) return false;
+  if (P.state !== 'idle' && P.state !== 'run' && P.state !== 'stop') return false;
+  if (!standing()) return false;
+  return skillTargets().length > 0;
+}
+function startChargeAtk() {
+  if (!canStartCharge()) return;
+  const list = skillTargets();
+  P.state = 'charge'; P.phase = 'hold'; P.sheet = 'jumps'; P.frame = 8; P.t = 0; P.dur = null;   // jumps.png 9コマ目
+  P.chT = 0; P.chTarget = nearestOf(list); P.chargeInv = true;
+  attackQueued = false; jumpPressed = false;
+  sfx('plat_move');
+}
+function cancelCharge() {   // 溜め中に解除(スピードバーストは維持)
+  endChargeAtk();
+  P.state = 'idle'; P.phase = null; setAnim('idles');
+  if (inputDir() !== 0) { P.state = 'run'; setAnim('player_run'); }
+}
+function updateCharge(dt) {
+  jumpPressed = false; attackQueued = false;
+  const list = skillTargets();
+  if (!list.length || !standing()) { cancelCharge(); return; }
+  if (!list.includes(P.chTarget)) P.chTarget = nearestOf(list);
+  P.chT = Math.min(CH.maxT, P.chT + dt);
+  P.facing = Math.sign(P.chTarget.x - P.x) || P.facing;
+  if (P.chT >= CH.maxT) releaseCharge();   // MAXで自動発動
+}
+function releaseCharge() {
+  const t = P.chTarget;
+  if (!t || !skillTargets().includes(t)) { cancelCharge(); return; }
+  const dist = Math.hypot(t.x - P.x, t.y - P.y);
+P.lunge = { target: t, T: Math.max(0.35, Math.min(0.8, dist / 1400)), t: 0, vx: 0, extra: Math.floor(P.chT * CH.perSec), hit: new Set() };
+  P.chT = 0;
+  P.state = 'jump'; P.phase = 'air'; P.airAttack = false;   // 通常のジャンプ
+  setAnim('jumps'); P.frame = 2; P.vy = -1;
+  sfx('smallswing');
+}
+function updateLunge(dt) {   // 放物線で敵へ(残り時間から毎フレーム速度を再計算して追尾)
+  const L = P.lunge, list = skillTargets();
+  jumpPressed = false; attackQueued = false;
+  if (!list.length || L.t > L.T + 0.25) { endChargeAtk(); return; }   // 敵がいない/外した → 解除
+  if (!list.includes(L.target)) L.target = nearestOf(list);
+  L.t += dt;
+  const e = L.target, g = CONFIG.gravity;
+  if (L.t < L.T) {
+    const tr = Math.max(0.03, L.T - L.t);
+    L.vx = (e.x - P.x) / tr;
+    P.vy = (e.y - (P.y - hbH() / 2)) / tr - 0.5 * g * tr;
+    P.facing = Math.sign(L.vx) || P.facing;
+  } else P.vy += g * dt;
+  moveX(L.vx * dt);
+  if (moveY(P.vy * dt) === 'land') {
+    endChargeAtk(); sfx('noise');
+    P.phase = 'land'; setAnim('jumps'); P.frame = 8; return;
+  }
+  // 対象以外の敵に当たったらダメージ + エフェクト + 音(突進は止まらない)
+  for (const o of list) {
+    if (o === e || L.hit.has(o) || !rectOverlap(hitboxRect(), enemyRect(o))) continue;
+    L.hit.add(o);
+    const n2 = playerAtk() + L.extra;
+    fx.push({ k: 'slash', x: o.x, y: o.y, t: 0, d: 0.3 });
+    if (enemyHittable(o)) hitEnemy(o, n2); else slashEnemy(o, n2);
+    sfx('ultra_swing');
+  }
+  // 対象に当たったらパリィと同じ硬直 + 音 + 火花(ダメージは硬直後に入る)
+  if (rectOverlap(hitboxRect(), enemyRect(e))) {
+    P.target = e; P.lungeDmg = playerAtk() + L.extra;
+    P.airFreeze = SHIELD.parryFreeze;
+    parryFx(e.x, e.y, 'air'); sfx('parry');
+    endChargeAtk(); return;
+  }
+  checkEdges();
+  P.t += dt; stepAnim();
+  const up = P.vy < 0;
+  if (up && P.frame > 4) P.frame = 2;
+  if (!up && P.frame < 5) P.frame = 5;
+}
+function drawChargeUI(g) {
+  const t = P.chTarget;
+  if (t) { const r = enemyRect(t); drawReticle(g, r.x + r.w / 2, r.y + r.h / 2, r.w, r.h); }
+  const w = 80, x = P.x - w / 2, y = P.y - hbH() - 28, p = P.chT / CH.maxT;
+  g.save();
+  g.fillStyle = '#000a'; g.fillRect(x - 2, y - 2, w + 4, 10);
+  g.fillStyle = p >= 1 ? '#fff' : '#37c8ff'; g.fillRect(x, y, w * p, 6);
+  g.font = 'bold 18px sans-serif'; g.textAlign = 'center'; g.lineWidth = 4; g.lineJoin = 'round';
+  g.strokeStyle = '#000'; g.fillStyle = '#ffe27a';
+// 【後】
+const txt = '+' + Math.floor(P.chT * CH.perSec);
+  g.strokeText(txt, P.x, y - 6); g.fillText(txt, P.x, y - 6);
+  g.restore();
+}
+function pauseTick(dt) {
+  const k = Math.min(1, dt * 12);
+  ui.alpha += (1 - ui.alpha) * k; ui.dim += (1 - ui.dim) * k; ui.tpAlpha += (1 - ui.tpAlpha) * k; ui.tpBlink += dt * TP.blinkSpeed;
+  tickHpUi(dt);   // ポーチ使用中も回復アニメを進める
+  tickFx(dt);
+  if (pz.msgT > 0) pz.msgT = Math.max(0, pz.msgT - dt);
+}
+const SPARK_COL = { shield: '#7fe8ff', air: '#ff9bff', sword: '#ffe27a' };
+function parryFx(x, y, kind) {
+  const big = kind !== 'sword', n = big ? 14 : 9;
+  fx.push({ k: 'spark', x, y, t: 0, d: big ? 0.45 : 0.3, kind, big,
+    rays: Array.from({ length: n }, (_, i) => ({ a: i / n * Math.PI * 2 + rand(-0.2, 0.2), l: rand(40, 90) * (big ? 1.4 : 1) })) });
+  if (big) fx.push({ k: 'ring', x, y, t: 0, d: 0.4, color: SPARK_COL[kind] });
+}
+function drawFx(g) {
+  for (const f of fx) {
+    const p = f.t / f.d; g.save();
+    if (f.k === 'pop') {   // 浮き上がる文字
+      g.globalAlpha = p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4;
+      g.font = 'bold 22px sans-serif'; g.textAlign = 'center'; g.lineWidth = 4; g.lineJoin = 'round';
+      g.strokeStyle = '#000'; g.fillStyle = f.color || '#fff';
+      const y = f.y - 36 * p;
+      g.strokeText(f.text, f.x, y); g.fillText(f.text, f.x, y);
+      g.restore(); continue;
+    }
+    if (f.k === 'spark') {
+      const c = SPARK_COL[f.kind] || '#fff';
+      if (p < 0.3) {   // 中心の白い閃光
+        g.globalAlpha = (1 - p / 0.3) * 0.9; g.fillStyle = '#fff';
+        g.beginPath(); g.arc(f.x, f.y, (f.big ? 34 : 22) * (0.4 + p * 2), 0, Math.PI * 2); g.fill();
+      }
+      g.globalAlpha = 1 - p * p; g.strokeStyle = c; g.lineCap = 'round'; g.lineWidth = 1 + 4 * (1 - p);
+      for (const r of f.rays) {   // 放射状の火花
+        const r0 = 14 + 50 * p * (f.big ? 1.2 : 0.8), r1 = r0 + r.l * (1 - p) * 0.8;
+        g.beginPath(); g.moveTo(f.x + Math.cos(r.a) * r0, f.y + Math.sin(r.a) * r0);
+        g.lineTo(f.x + Math.cos(r.a) * r1, f.y + Math.sin(r.a) * r1); g.stroke();
+      }
+      g.beginPath(); g.arc(f.x, f.y, (f.big ? 30 : 20) + (f.big ? 90 : 55) * p, 0, Math.PI * 2); g.stroke();
+      g.restore(); continue;
+    }
+    g.globalAlpha = 1 - p;
+    if (f.k === 'slash') {
+      g.strokeStyle = '#fff'; g.lineWidth = 6; const L = 30 + 60 * p;
+      g.beginPath(); g.moveTo(f.x - L, f.y - L); g.lineTo(f.x + L, f.y + L); g.moveTo(f.x + L, f.y - L); g.lineTo(f.x - L, f.y + L); g.stroke();
+    } else {
+      g.strokeStyle = f.color || '#4fe8ff'; g.lineWidth = 5; g.beginPath(); g.arc(f.x, f.y, 40 + 70 * p, 0, Math.PI * 2); g.stroke();
+    }
+    g.restore();
+  }
+}
+// 選択レティクル: 四隅のブラケット + 十字線 + 中心点(水色)。ゆっくり脈動する
+function drawReticle(g, cx, cy, w, h) {
+  const t = performance.now() / 1000;
+  const pulse = 1 + 0.06 * Math.sin(t * 6);
+  const hw = (w / 2 + 14) * pulse, hh = (h / 2 + 14) * pulse;   // 対象より少し外側
+  const L = Math.min(hw, hh) * 0.45;                              // ブラケットの腕の長さ
+  g.save();
+  g.strokeStyle = '#4fe8ff'; g.fillStyle = '#4fe8ff';
+  g.lineWidth = 3; g.lineCap = 'square';
+  // 四隅のブラケット
+  g.beginPath();
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+    const x = cx + sx * hw, y = cy + sy * hh;
+    g.moveTo(x - sx * L, y); g.lineTo(x, y); g.lineTo(x, y - sy * L);
+  }
+  g.stroke();
+  // 十字線(辺の中央から内側へ短く)
+  g.lineWidth = 2;
+  const tick = 12, gap = 8;
+  g.beginPath();
+  g.moveTo(cx - hw, cy); g.lineTo(cx - hw + tick, cy);
+  g.moveTo(cx + hw, cy); g.lineTo(cx + hw - tick, cy);
+  g.moveTo(cx, cy - hh); g.lineTo(cx, cy - hh + tick);
+  g.moveTo(cx, cy + hh); g.lineTo(cx, cy + hh - tick);
+  // 中心の小さな十字
+  g.moveTo(cx - gap, cy); g.lineTo(cx + gap, cy);
+  g.moveTo(cx, cy - gap); g.lineTo(cx, cy + gap);
+  g.stroke();
+  // 中心点
+  g.beginPath(); g.arc(cx, cy, 2.5, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+// アイテムのアニメ時計(ポーズ中も動かしたいので実時間を使う)
+const itemFrame = () => Math.floor(performance.now() / 1000 / ITEM.animDelay) % SHEETS.item.frames;
+const itemEffectText = it => [
+  it.heal ? 'HP ' + (it.heal > 0 ? '+' : '') + it.heal : '',
+  it.healtp ? 'TP +' + it.healtp : '',
+  (it.defT > 0 && it.defRate !== 1) ? '防御×' + it.defRate + '(' + it.defT + 's)' : '',
+  (it.atkT > 0 && it.atk > 0) ? '攻撃+' + it.atk + '(' + it.atkT + 's)' : '',
+].filter(Boolean).join(' / ') || '―';
+// ---- ポーチUI(特殊アクションと同じ: 黒背景 + 白(灰)枠) ----
+function drawItemIcon(g, id, x, y) {   // x,y = 左上
+  const s = SHEETS.item, S = ITEM.iconScale, { sx, sy } = frameRect(s, itemFrame());
+  g.drawImage(getImg('item'), sx, sy, s.w, s.h, x, y, s.w * S, s.h * S);
+}
+function wrapText(g, text, maxW) {
+  const lines = []; let cur = '';
+  for (const ch of String(text || '')) {
+    if (ch === '\n') { lines.push(cur); cur = ''; }
+    else if (g.measureText(cur + ch).width > maxW) { lines.push(cur); cur = ch; }
+    else cur += ch;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+// アイテム行の一覧。選択行は白背景+黒文字。skipRow=true で末尾に「拾わない」行を足す
+function drawRows(g, left, right, top, vis, skipRow) {
+  const total = pouch.length + (skipRow ? 1 : 0);
+  g.textBaseline = 'alphabetic';
+  if (!total) { g.fillStyle = '#777'; g.font = 'bold 15px sans-serif'; g.textAlign = 'left'; g.fillText('アイテムなし', left + 8, top + 18); return; }
+  const iw = SHEETS.item.w * ITEM.iconScale, ih = SHEETS.item.h * ITEM.iconScale;
+  for (let r = 0; r < vis; r++) {
+    const i = pz.scroll + r; if (i >= total) break;
+    const y = top + r * ROW_H, on = i === pz.sel;
+    if (on) { g.fillStyle = '#fff'; g.fillRect(left, y, right - left, ROW_H - 2); }
+    g.font = 'bold 15px sans-serif'; g.textAlign = 'left';
+    if (i < pouch.length) {
+      const id = pouch[i], it = ITEMS[id] || { name: '???', heal: 0 };
+      drawItemIcon(g, id, left + 6, y + (ROW_H - 2 - ih) / 2);
+      g.fillStyle = on ? '#000' : '#fff';
+      g.fillText(it.name, left + 6 + iw + 8, y + 18);
+      g.textAlign = 'right'; g.fillText(itemEffectText(it), right - 8, y + 18);
+    } else {
+      g.fillStyle = on ? '#000' : '#fff';
+      g.fillText('拾わない(そのままにする)', left + 10, y + 18);
+    }
+  }
+  g.fillStyle = '#aab'; g.font = '12px sans-serif'; g.textAlign = 'center';   // スクロール記号
+  if (pz.scroll > 0) g.fillText('▲', right + 14, top + 12);
+  if (pz.scroll + vis < total) g.fillText('▼', right + 14, top + vis * ROW_H - 6);
+}
+function drawPouchPanel(g, cx, y0, W) {
+  const PH = 270, left = cx - W / 2 + 16, right = cx + W / 2 - 28;
+  g.fillStyle = 'rgba(10,16,32,.88)'; g.strokeStyle = '#8890b0'; g.lineWidth = 2;
+  g.fillRect(cx - W / 2, y0, W, PH); g.strokeRect(cx - W / 2, y0, W, PH);
+  g.fillStyle = '#fff'; g.font = 'bold 16px sans-serif'; g.textAlign = 'left';
+  g.fillText('ポーチ  ' + pouch.length + ' / ' + ITEM.max, cx - W / 2 + 24, y0 + 28);
+  if (pz.msgT > 0) { g.textAlign = 'right'; g.fillStyle = '#ff9'; g.font = 'bold 14px sans-serif'; g.fillText(pz.msg, cx + W / 2 - 24, y0 + 28); }
+  drawRows(g, left, right, y0 + 40, POUCH_VIS, false);
+  g.strokeStyle = '#556'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(cx - W / 2 + 16, y0 + 176); g.lineTo(cx + W / 2 - 16, y0 + 176); g.stroke();
+  // 選択中アイテムの説明
+  g.textAlign = 'left'; g.font = '14px sans-serif'; g.fillStyle = '#dde';
+  const it = pouch.length ? ITEMS[pouch[pz.sel]] : null;
+  if (it) wrapText(g, it.desc, W - 48).slice(0, 3).forEach((t, i) => g.fillText(t, cx - W / 2 + 24, y0 + 198 + i * 18));
+  g.textAlign = 'center'; g.fillStyle = '#aab'; g.font = '12px sans-serif';
+  g.fillText('↑↓ 選択 / Enter 使う', cx, y0 + PH - 10);
+}
+function drawSwapUI(g, cx, W) {
+  const H = 372, left = cx - W / 2 + 16, right = cx + W / 2 - 28;
+  g.fillStyle = 'rgba(10,16,32,.88)'; g.strokeStyle = '#8890b0'; g.lineWidth = 2;
+  g.fillRect(cx - W / 2, 20, W, H); g.strokeRect(cx - W / 2, 20, W, H);
+  g.fillStyle = '#fff'; g.font = 'bold 16px sans-serif'; g.textAlign = 'center';
+  g.fillText('ポーチが一杯です', cx, 46);
+  const d = pz.drop, it = d && ITEMS[d.id];
+  if (it) {
+    drawItemIcon(g, d.id, cx - W / 2 + 24, 56);
+    g.textAlign = 'left'; g.font = 'bold 15px sans-serif'; g.fillStyle = '#fff';
+    g.fillText('拾うアイテム: ' + it.name + '   ' + itemEffectText(it), cx - W / 2 + 24 + 34, 76);
+    g.font = '13px sans-serif'; g.fillStyle = '#aab';
+    wrapText(g, it.desc, W - 48).slice(0, 2).forEach((t, i) => g.fillText(t, cx - W / 2 + 24, 102 + i * 16));
+  }
+  g.strokeStyle = '#556'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(cx - W / 2 + 16, 130); g.lineTo(cx + W / 2 - 16, 130); g.stroke();
+  g.textAlign = 'left'; g.font = 'bold 14px sans-serif'; g.fillStyle = '#fff';
+  g.fillText('捨てるアイテムを選ぶ  (' + pouch.length + ' / ' + ITEM.max + ')', cx - W / 2 + 24, 150);
+  drawRows(g, left, right, 158, SWAP_VIS, true);
+  g.strokeStyle = '#556';
+  g.beginPath(); g.moveTo(cx - W / 2 + 16, 322); g.lineTo(cx + W / 2 - 16, 322); g.stroke();
+  g.textAlign = 'left'; g.font = '14px sans-serif'; g.fillStyle = '#dde';
+  if (pz.sel < pouch.length) {
+    const cur = ITEMS[pouch[pz.sel]];
+    if (cur) wrapText(g, cur.desc, W - 48).slice(0, 2).forEach((t, i) => g.fillText(t, cx - W / 2 + 24, 344 + i * 18));
+  } else g.fillText('拾わずにそのままにします。', cx - W / 2 + 24, 344);
+  g.textAlign = 'center'; g.fillStyle = '#aab'; g.font = '12px sans-serif';
+  g.fillText('↑↓ 選択 / Enter 決定 / X 拾わない', cx, 20 + H - 10);
+}
+function drawSkillUI(g) {
+  if (!pz.on) return;   // ポーズ中以外は何も描かない(プレイヤー上の文字・シールドの線を削除)
+  g.save(); g.imageSmoothingEnabled = false; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  const cx = 700, W = 480;
+  if (pz.phase === 'swap') { drawSwapUI(g, cx, W); g.restore(); return; }
+  const buffs = [];
+  if (SK.rapidT > 0) buffs.push('ラピッドスラッシュ  残り ' + SK.rapidT.toFixed(1) + 's');
+  if (SK.speedT > 0) buffs.push('スピードバースト  残り ' + SK.speedT.toFixed(1) + 's');
+  if (SK.shieldReady) buffs.push('シールドチャージ  待機中(次のダメージを無効化)');
+  if (SK.halfT > 0) buffs.push('ダメージ半減  残り ' + SK.halfT.toFixed(1) + 's');
+  if (BUFF.defT > 0) buffs.push('防御×' + BUFF.defRate + '(アイテム)  残り ' + BUFF.defT.toFixed(1) + 's');
+  if (BUFF.atkT > 0) buffs.push('攻撃力+' + BUFF.atk + '(アイテム)  残り ' + BUFF.atkT.toFixed(1) + 's');
+  const nb = Math.max(1, buffs.length);
+  const H = pz.phase === 'menu' ? 172 + nb * 18 : 110;
+  g.fillStyle = 'rgba(10,16,32,.88)'; g.strokeStyle = '#8890b0'; g.lineWidth = 2;
+  g.fillRect(cx - W / 2, 20, W, H); g.strokeRect(cx - W / 2, 20, W, H);
+  g.fillStyle = '#fff'; g.font = 'bold 16px sans-serif';
+  if (pz.phase === 'menu') {
+    g.fillText('PAUSE  特殊アクション (1~3)', cx, 46);
+    for (let n = 1; n <= 3; n++) {
+      const s = SKILLS[n], why = skillBlock(n), y = 56 + n * 24;
+      g.fillStyle = why ? '#777' : '#fff'; g.textAlign = 'left';
+      g.fillText(n + '  ' + s.name + '   TP ' + s.tp, cx - W / 2 + 24, y);
+      if (why) { g.textAlign = 'right'; g.fillText(why, cx + W / 2 - 24, y); }
+    }
+    // ---- 現在の状態 ----
+    g.strokeStyle = '#556'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(cx - W / 2 + 16, 142); g.lineTo(cx + W / 2 - 16, 142); g.stroke();
+    g.textAlign = 'left'; g.font = '13px sans-serif'; g.fillStyle = '#aab';
+    g.fillText('現在の状態', cx - W / 2 + 24, 160);
+    g.font = 'bold 14px sans-serif';
+    if (buffs.length) { g.fillStyle = '#7ff'; buffs.forEach((t, i) => g.fillText(t, cx - W / 2 + 24, 178 + i * 18)); }
+    else { g.fillStyle = '#777'; g.fillText('なし', cx - W / 2 + 24, 178); }
+    g.textAlign = 'center'; g.fillStyle = '#aab'; g.font = '12px sans-serif';
+    g.fillText('C 再開 / X 閉じる', cx, 20 + H - 10);
+    drawPouchPanel(g, cx, 20 + H + 10, W);
+  } else {
+    g.font = 'bold 24px sans-serif'; g.fillText(SKILLS[pz.skill].name, cx, 62);
+    g.font = '13px sans-serif'; g.fillStyle = '#aab';
+    g.fillText(pz.skill === 1 ? '←→↑↓ 対象選択 / C 発動 / X 戻る' : 'C 発動 / X 戻る', cx, 100);
+    if (pz.target) {
+      const r = pz.target === P ? hitboxRect() : enemyRect(pz.target);
+      drawReticle(g, r.x + r.w / 2, r.y + r.h / 2, r.w, r.h);
+    }
+  }
+  g.restore();
+}
+// ================= 宝箱(バトルゾーン報酬) =================
+const CHEST = {
+  scale: 2.5, gravity: 1100, maxFall: 1400,
+  items: 3,                 // 出てくるアイテム数
+  popY: [520, 700],         // アイテムの初速(上向き)
+  popX: [90, 170],          // アイテムの横速度(左/中/右に振り分け)
+  pickDelay: 0.6,           // 出現後、拾えるようになるまでの秒数
+  fadeStart: 1.0, fadeTime: 0.5,
+};
+const chests = [];
+const chestW = () => SHEETS.treasure.w * CHEST.scale, chestH = () => SHEETS.treasure.h * CHEST.scale;
+function spawnChest() {   // プレイヤーの真上から落とす(天井が固ければ、そのすぐ下から)
+  const w = chestW(), h = chestH();
+  const x = Math.max(w / 2, Math.min(STAGE_W - w / 2, P.x));
+  let y = P.y - hbH() - h / 2 - 10;
+  if (rectHit(x, y, w, h)) y = P.y - hbH() / 2;                  // 頭上が埋まっていたら胴体の位置から
+  else for (let i = 0; i < 80; i++) {                            // 空いている限り上へ(最大 800px / 画面外まで)
+    const ny = y - 10;
+    if (ny < -h || rectHit(x, ny, w, h)) break;
+    y = ny;
+  }
+  chests.push({ map: curName, x, y, vy: 0, landed: false, open: false, openT: 0, age: 0 });
+}
+function openChest(c) {
+  c.open = true; c.openT = 0;
+  sfx('chest');   // 宝箱を開ける  
+fx.push({ k: 'ring', x: c.x, y: c.y, t: 0, d: 0.4, color: '#ffe070' });
+  if (!ITEMS.length) return;
+  const n = CHEST.items;
+  for (let i = 0; i < n; i++) {
+    const side = i - (n - 1) / 2;                                // 左 / 中央 / 右 へ放物線
+    const vx = side === 0 ? rand(-40, 40) : Math.sign(side) * rand(CHEST.popX[0], CHEST.popX[1]) * (Math.abs(side) > 0.5 ? 1 : 0.6);
+    drops.push({ map: c.map, x: c.x, y: c.y - chestH() / 4, vx, vy: -rand(CHEST.popY[0], CHEST.popY[1]),
+      id: Math.floor(Math.random() * ITEMS.length), landed: false, age: 0, skip: false, delay: CHEST.pickDelay });
+  }
+}
+function updateChests(dt) {
+  const w = chestW(), h = chestH(), T = sol.T;
+  for (let i = chests.length - 1; i >= 0; i--) {
+    const c = chests[i];
+    if (c.map !== curName) continue;
+    c.age += dt;
+    if (!c.landed) {
+      c.vy = Math.min(CHEST.maxFall, c.vy + CHEST.gravity * dt);
+      const ny = c.y + c.vy * dt;
+      if (c.vy > 0 && rectHit(c.x, ny, w, h)) { c.y = sol.oy + Math.floor((ny + h / 2 - sol.oy - 0.001) / T) * T - h / 2; c.landed = true; c.vy = 0; }
+      else if (hasFloor() && ny + h / 2 > STAGE_H) { c.y = STAGE_H - h / 2; c.landed = true; c.vy = 0; }
+      else if (ny - h / 2 > STAGE_H + 20) { chests.splice(i, 1); continue; }   // 床が無ければ落ちて消える
+      else c.y = ny;
+    }
+    if (c.open) { c.openT += dt; if (c.openT >= CHEST.fadeStart + CHEST.fadeTime) chests.splice(i, 1); }
+  }
+}
+function drawChests(g) {
+  if (!imagesReady) return;
+  const s = SHEETS.treasure, S = CHEST.scale, im = getImg('treasure');
+  for (const c of chests) {
+    if (c.map !== curName) continue;
+    const { sx, sy } = frameRect(s, c.open ? 1 : 0);
+    g.save(); g.imageSmoothingEnabled = false;
+    if (c.open) g.globalAlpha = Math.max(0, 1 - Math.max(0, c.openT - CHEST.fadeStart) / CHEST.fadeTime);
+    g.drawImage(im, sx, sy, s.w, s.h, c.x - s.w * S / 2, c.y - s.h * S / 2, s.w * S, s.h * S);
+    g.restore();
+  }
+}
+// マウス: ステージ座標に変換して、着地済みの宝箱をクリックで開ける
+function chestAt(ev) {
+  const r = stageEl.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const w = chestW(), h = chestH();
+  return chests.find(c => c.map === curName && c.landed && !c.open && Math.abs(mx - c.x) <= w / 2 && Math.abs(my - c.y) <= h / 2) || null;
+}
+addEventListener('mousemove', ev => { stageEl.style.cursor = (!pz.on && !transitioning && chestAt(ev)) ? 'pointer' : ''; });
+addEventListener('mousedown', ev => {
+  if (ev.button !== 0 || pz.on || transitioning || isFrozen() || ev.target.closest('.pad')) return;
+  const c = chestAt(ev); if (c) openChest(c);
+});
+// ================= 落ちているアイテム =================
+function dropItem(e) {   // 敵を倒した時に確率でドロップ
+  if (e.dropped) return;
+  e.dropped = true;
+  if (!ITEMS.length || Math.random() >= ITEM.dropRate) return;
+  drops.push({ map: e.map, x: e.x, y: e.y, vx: rand(-70, 70), vy: -ITEM.pop,
+    id: Math.floor(Math.random() * ITEMS.length), landed: false, age: 0, skip: false });
+}
+function updateDrops(dt) {
+  const w = SHEETS.item.w * ITEM.scale, h = SHEETS.item.h * ITEM.scale;
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const d = drops[i];
+    if (d.map !== curName) continue;
+    d.age += dt;
+    if (!d.landed) {
+      d.vy += ITEM.gravity * dt;
+      const nx = d.x + d.vx * dt;
+      if (nx < w / 2 || nx > STAGE_W - w / 2 || rectHit(nx, d.y, w, h)) d.vx = 0; else d.x = nx;
+      d.vx *= Math.max(0, 1 - 2 * dt);
+      const ny = d.y + d.vy * dt, T = sol.T;
+      if (rectHit(d.x, ny, w, h)) {
+        if (d.vy > 0) { d.y = sol.oy + Math.floor((ny + h / 2 - sol.oy - 0.001) / T) * T - h / 2; d.landed = true; }
+        d.vy = 0;
+      } else if (hasFloor() && ny + h / 2 > STAGE_H) { d.y = STAGE_H - h / 2; d.landed = true; d.vy = 0; }
+      else d.y = ny;
+      if (d.y - h / 2 > STAGE_H + 20) { drops.splice(i, 1); continue; }   // 床が無ければ落ちて消える
+    }
+   if (d.age < (d.delay || 0)) continue; 
+    // ---- 拾う判定(ポーチが一杯でなければ自動で拾う) ----
+    const m = ITEM.margin;
+    const near = rectOverlap({ x: d.x - w / 2 - m, y: d.y - h / 2 - m, w: w + m * 2, h: h + m * 2 }, hitboxRect());
+    if (!near) { d.skip = false; continue; }
+    if (d.skip || transitioning) continue;
+    if (pouch.length < ITEM.max) {
+      pouch.push(d.id); drops.splice(i, 1);
+      sfx('item');   // アイテムを拾う
+      const it = ITEMS[d.id];
+      if (it) fx.push({ k: 'pop', x: P.x, y: P.y - hbH() - 10, t: 0, d: 1, text: it.name, color: '#9ff' });
+    } else { openSwap(d); return; }   // 一杯: 捨てる/拾わないを選ぶメニューへ
+  }
+}
+function drawDrops(g) {
+  if (!imagesReady) return;
+  const s = SHEETS.item, S = ITEM.scale, im = getImg('item');
+  const fr = itemFrame();
+  for (const d of drops) {
+    if (d.map !== curName) continue;
+    const { sx, sy } = frameRect(s, fr);
+    const bob = d.landed ? (Math.sin(d.age * 4) - 1) / 2 * ITEM.bob : 0;
+    g.save(); g.imageSmoothingEnabled = false;
+    if (d.skip) g.globalAlpha = 0.6;
+    g.drawImage(im, sx, sy, s.w, s.h, d.x - s.w * S / 2, d.y - s.h * S / 2 + bob, s.w * S, s.h * S);
+    g.restore();
+  }
+}
+// ================= プレイヤー描画 =================
+const pcv = document.getElementById('player'), pg = pcv.getContext('2d');
+function imageAnchor(p = P) {
+  const S = CONFIG.scale, fw = SHEETS[p.sheet].w * S;
+  const cx = p.facing >= 0 ? (p.x - HITBOX.w * S / 2) - HITBOX.x * S + fw / 2
+                           : (p.x + HITBOX.w * S / 2) + HITBOX.x * S - fw / 2;
+  return { cx, bottom: p.y + HITBOX.y * S };
+}
+function drawPlayer() {
+  const g = pg;
+  g.clearRect(0, 0, pcv.width, pcv.height);
+  g.imageSmoothingEnabled = false;
+  drawEnemies(g);
+drawChests(g);
+  drawDrops(g);
+  drawPGhosts(g);
+  if (imagesReady) {
+    const s = SHEETS[P.sheet], f = Math.min(P.frame, s.frames - 1), { sx, sy } = frameRect(s, f);
+    const dw = s.w * CONFIG.scale, dh = s.h * CONFIG.scale, A = imageAnchor();
+    g.save();
+    g.translate(A.cx, A.bottom);
+    g.scale(P.facing < 0 ? -1 : 1, 1);
+    g.drawImage(getImg(P.sheet), sx, sy, s.w, s.h, -dw / 2, -dh, dw, dh);
+    g.restore();
+  }
+        drawBullets(g); if (!isFrozen()) drawFx(g);
+  if (P.state === 'charge') drawChargeUI(g);
+  if (debug) {
+    g.fillStyle = 'rgba(255,0,0,0.25)'; g.strokeStyle = 'rgba(255,0,0,0.6)';
+    sol.g.forEach((row, r) => row.forEach((v, c) => { if (v) { g.fillRect(sol.ox + c * sol.T, sol.oy + r * sol.T, sol.T, sol.T); g.strokeRect(sol.ox + c * sol.T, sol.oy + r * sol.T, sol.T, sol.T); } }));
+    g.fillStyle = 'rgba(0,255,80,0.3)'; g.fillRect(P.x - hbW() / 2, P.y - hbH(), hbW(), hbH());
+    g.strokeStyle = '#00ff50'; g.strokeRect(P.x - hbW() / 2, P.y - hbH(), hbW(), hbH());
+    const z = parryZone(); g.strokeStyle = '#4080ff'; g.strokeRect(z.x, z.y, z.w, z.h);
+    const az = attackZone(); g.strokeStyle = attackActive() ? '#ff40ff' : '#ffa000'; g.strokeRect(az.x, az.y, az.w, az.h);
+  }
+  if (imagesReady) { drawUI(g); drawTP(g); drawSkillUI(g); }
+  drawSpot();
+}
+function drawUI(g) {
+  if (ui.alpha < 0.01) return;
+  g.save();
+  g.imageSmoothingEnabled = false;
+  if (ui.dim > 0.01) {
+    g.fillStyle = `rgba(0,0,0,${CONFIG.dimAlpha * ui.dim})`;
+    g.fillRect(0, 0, g.canvas.width, g.canvas.height);
+  }
+  g.globalAlpha = ui.alpha;
+  const S = CONFIG.uiScale, ox = CONFIG.uiX, oy = CONFIG.uiY;
+  const img = getImg('hp'), W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+  const R = (xb, yb, w, h) => [ox + xb * S, oy + (H - yb - h) * S, w * S, h * S];
+  const drawBars = () => {
+    const b = HPUI.bar;
+    const w1 = hp > 0 ? Math.ceil(b.len * hp / CONFIG.hpMax) : 0;
+    const w2 = ui.trail > 0 ? Math.ceil(b.len * ui.trail / CONFIG.hpMax) : 0;
+    const ws = ui.hpShown > 0 ? Math.ceil(b.len * Math.min(ui.hpShown, hp) / CONFIG.hpMax) : 0;   // 定着済みの青
+    g.fillStyle = '#d01c30'; g.fillRect(...R(b.x, b.y, b.len, b.h));
+    if (w2 > w1) { g.fillStyle = '#e8f6ff'; g.fillRect(...R(b.x + w1, b.y, w2 - w1, b.h)); }
+    if (w1 > 0) { g.fillStyle = '#37c8ff'; g.fillRect(...R(b.x, b.y, w1, b.h)); }
+    if (w1 > ws) {   // 回復した分: 白くハイライトして脈動 → 青へ定着(TPと同じ演出)
+      const a = HEAL.hiAlpha * (0.8 + 0.2 * Math.sin(performance.now() / 1000 * 14));
+      g.fillStyle = `rgba(255,255,255,${a})`; g.fillRect(...R(b.x + ws, b.y, w1 - ws, b.h));
+    }
+  };
+  if (!CONFIG.barOnTop) drawBars();
+  g.drawImage(img, ox, oy, W * S, H * S);
+  if (CONFIG.barOnTop) drawBars();
+  const n = SHEETS.numbers, nimg = getImg('numbers'), v = Math.round(hp);
+  [Math.floor(v / 100) % 10, Math.floor(v / 10) % 10, v % 10].forEach((d, i) => {
+    const [dx, dy, dw, dh] = R(HPUI.num.x + i * (n.w + HPUI.num.gap), HPUI.num.y, n.w, n.h);
+    const { sx, sy } = frameRect(n, d);
+    g.drawImage(nimg, sx, sy, n.w, n.h, dx, dy, dw, dh);
+  });
+  g.restore();
+}
+
+// ---- TPゲージ ----
+const tpTmp = document.createElement('canvas');
+function tpTint(img, sy, h, W, alpha) {   // tp.png の一部を白く塗った画像を返す(透過部分はそのまま)
+  tpTmp.width = W; tpTmp.height = h;
+  const t = tpTmp.getContext('2d'); t.imageSmoothingEnabled = false;
+  t.drawImage(img, 0, sy, W, h, 0, 0, W, h);
+  t.globalCompositeOperation = 'source-atop';
+  t.fillStyle = `rgba(255,255,255,${alpha})`; t.fillRect(0, 0, W, h);
+  return tpTmp;
+}
+function drawTP(g) {
+  if (ui.tpAlpha < 0.01) return;
+  const S = CONFIG.tpScale, ox = CONFIG.tpX, oy = CONFIG.tpY;
+  const bg = getImg('tp_bg'), img = getImg('tp');
+  const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+  const body = H - TP.base - TP.top;                       // 本体の高さ(187)
+  const vis = v => Math.min(H, TP.base + Math.round(body * v / TP.max));   // 下から何px見せるか
+  const vs = vis(ui.tpShown), vt = vis(ui.tp);
+  g.save(); g.imageSmoothingEnabled = false; g.globalAlpha = ui.tpAlpha;
+  g.drawImage(bg, ox, oy, (bg.naturalWidth || bg.width) * S, (bg.naturalHeight || bg.height) * S);
+  g.drawImage(img, 0, H - vs, W, vs, ox, oy + (H - vs) * S, W * S, vs * S);   // 定着済み
+  if (vt > vs) {                                                              // 増加分のハイライト
+    g.drawImage(tpTint(img, H - vt, vt - vs, W, TP.hiAlpha), ox, oy + (H - vt) * S, W * S, (vt - vs) * S);
+  }
+  if (ui.tp >= TP.max) {                                                      // 満タン: 白く点滅
+    const a = TP.blinkMax * (0.5 + 0.5 * Math.sin(ui.tpBlink));
+    g.drawImage(tpTint(img, H - vt, vt, W, a), ox, oy + (H - vt) * S, W * S, vt * S);
+  }
+  g.restore();
+}
+
+// ================= 盾 / パリィ / 弾幕 =================
+const SHIELD = {
+  hold: 1,            // 防御形態(2コマ目)を保持する秒数
+  moveRate: 0.5,      // 防御中の移動速度倍率
+  damageRate: 0.5,    // 防御中のダメージ倍率 (Math.round で四捨五入)
+  parryWindow: 0.2,   // 発動してからパリィ判定が有効な秒数
+  parryFreeze: 0.2,   // パリィ成立時のハイライト停止秒数
+  invincible: 0.5,    // パリィ後の無敵秒数
+};
+const BOOST = { time: 1, rate: 1.6 };                 // パリィ成立後の加速(秒 / 移動速度倍率)
+const moveSpd = () => CONFIG.moveSpeed * (P.boostT > 0 ? BOOST.rate : 1) * (SK.speedT > 0 ? 1.5 : 1);
+const PARRY = { reach: 0.8, up: 1.5 };    // 目の前の判定範囲: 幅=ヒットボックス幅×reach / 高さ=ヒットボックス高さ×up
+const BULLET = { r: 16, speed: 200, dmg: 30 };
+const bullets = [];
+const isFrozen = () => (P.state === 'shield' && P.phase === 'freeze') || P.airFreeze > 0;
+function loseHp(n) {
+  const before = hp;
+  hp = Math.max(0, hp - n);
+  if (hp < before) { ui.trailWait = CONFIG.trailDelay; ui.showT = 1; }
+}
+
+// ---- 弾 ----
+function spawnBullet() {   // マップ中央から、発射時点のプレイヤー位置へ直進
+  const x = STAGE_W / 2, y = STAGE_H / 2;
+  const dx = P.x - x, dy = (P.y - hbH() / 2) - y, len = Math.hypot(dx, dy) || 1;
+  bullets.push({ x, y, vx: dx / len * BULLET.speed, vy: dy / len * BULLET.speed, r: BULLET.r, dmg: BULLET.dmg, reflected: false });
+}
+function hitboxRect() { return { x: P.x - hbW() / 2, y: P.y - hbH(), w: hbW(), h: hbH() }; }
+function circleRect(b, z) {
+  const cx = Math.max(z.x, Math.min(b.x, z.x + z.w)), cy = Math.max(z.y, Math.min(b.y, z.y + z.h));
+  return (b.x - cx) ** 2 + (b.y - cy) ** 2 <= b.r * b.r;
+}
+function rectOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function bulletInSolid(b) {   // 手前レイヤーの固いタイル
+  const T = sol.T;
+  for (const [dx, dy] of [[0, 0], [b.r, 0], [-b.r, 0], [0, b.r], [0, -b.r]]) {
+    const c = Math.floor((b.x + dx - sol.ox) / T), r = Math.floor((b.y + dy - sol.oy) / T);
+    if (sol.g[r] && sol.g[r][c]) return true;
+  }
+  return false;
+}
+function updateBullets(dt) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    if (b.kind === 'book' && !b.reflected) bookMotion(b, dt);
+    if (b.kind === 'knife' && !b.reflected) knifeMotion(b, dt);
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    const oob = b.x < -b.r || b.x > STAGE_W + b.r || b.y < -b.r || b.y > STAGE_H + b.r;
+    let dead = oob || (b.kind !== 'knife' && bulletInSolid(b));   // ナイフは手前レイヤーを貫通
+    // 弾き返された弾が敵に当たる
+    if (!dead && b.reflected) {
+      for (const e of enemies) {
+        if (e.map === curName && enemyHittable(e) && circleRect(b, enemyRect(e))) { hitEnemy(e, b.dmg); dead = true; break; }
+      }
+    }
+    if (!dead && !b.reflected && !b.aim && circleRect(b, hitboxRect())) {
+      dead = !!damagePlayer(b.dmg, Math.sign(b.x - P.x) || P.facing, b);   // ダメージを与えたら消える(無敵中などは素通り)
+    }
+    if (dead) bullets.splice(i, 1);
+  }
+}
+function drawBullet(g, b, highlight) {
+  g.save();
+  if (b.kind === 'knife') {
+    const s = SHEETS.knife, dw = s.w * KNIFE.scale, dh = s.h * KNIFE.scale;
+    if (b.aim && !highlight) {   // 予告線
+      g.save(); g.setLineDash([10, 8]); g.lineWidth = 2;
+      g.strokeStyle = `rgba(255,70,90,${0.35 + 0.4 * Math.min(1, b.age / KNIFE.warn)})`;
+      g.beginPath(); g.moveTo(b.x, b.y); g.lineTo(b.x + Math.cos(b.ang) * 1600, b.y + Math.sin(b.ang) * 1600); g.stroke(); g.restore();
+    }
+    if (b.reflected) b.ang = Math.atan2(b.vy, b.vx);
+    g.save();
+    g.imageSmoothingEnabled = false;
+    g.globalAlpha = b.aim ? Math.min(1, b.age / 0.2) : 1;
+    g.translate(b.x, b.y); g.rotate(b.ang);                 // 画像は右向き
+    g.drawImage(getImg('knife'), s.x, s.y, s.w, s.h, -dw / 2, -dh / 2, dw, dh);
+    g.restore();
+    if (b.reflected || highlight) { g.lineWidth = 3; g.strokeStyle = highlight ? '#fff' : '#4fd8ff'; g.beginPath(); g.arc(b.x, b.y, b.r + 4, 0, Math.PI * 2); g.stroke(); }
+    g.restore(); return;
+  }
+  if (b.kind === 'book') {
+    const s = SHEETS.book_projectile, dw = s.w * ENEMY.bulletScale, dh = s.h * ENEMY.bulletScale;
+    g.imageSmoothingEnabled = false;
+    g.drawImage(getImg('book_projectile'), s.x, s.y, s.w, s.h, b.x - dw / 2, b.y - dh / 2, dw, dh);
+    if (b.reflected || highlight) { g.lineWidth = 3; g.strokeStyle = highlight ? '#fff' : '#4fd8ff'; g.beginPath(); g.arc(b.x, b.y, b.r + 4, 0, Math.PI * 2); g.stroke(); }
+    g.restore(); return;
+  }
+  g.beginPath(); g.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  g.fillStyle = b.reflected ? '#4fd8ff' : '#ff4466'; g.fill();
+  g.beginPath(); g.arc(b.x, b.y, b.r * 0.5, 0, Math.PI * 2);
+  g.fillStyle = '#fff'; g.fill();
+  if (highlight) { g.lineWidth = 3; g.strokeStyle = '#fff'; g.beginPath(); g.arc(b.x, b.y, b.r + 3, 0, Math.PI * 2); g.stroke(); }
+  g.restore();
+}
+function drawBullets(g) { for (const b of bullets) drawBullet(g, b, false); }
+
+// ---- 盾 ----
+function parryZone() {   // 向いている側の「目の前(前方上)」
+  const w = hbW() * PARRY.reach, h = hbH() * PARRY.up;
+  return { x: P.facing >= 0 ? P.x : P.x - w, y: P.y - h, w, h };
+}
+function findParryTarget() {   // 範囲内で最も近い(反射前の)弾、または突進中の敵
+  const z = parryZone(), cx = P.x, cy = P.y - hbH() / 2;
+  let best = null, bd = Infinity;
+  for (const b of bullets) {
+    if (b.reflected || b.aim || !circleRect(b, z)) continue;   // 予告中のナイフは対象外
+    const d = Math.hypot(b.x - cx, b.y - cy);
+    if (d < bd) { bd = d; best = b; }
+  }
+  for (const e of enemies) {
+    if (!parryable(e) || !rectOverlap(z, enemyRect(e))) continue;
+    const d = Math.hypot(e.x - cx, e.y - cy);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+function tryShield() {   // 地上の通常状態からのみ発動
+  if (transitioning || !imagesReady || !worldReady) return;
+  if (P.state !== 'idle' && P.state !== 'run' && P.state !== 'stop') return;
+  if (!standing()) return;
+  P.state = 'shield'; P.phase = 'intro'; P.sheet = 'shields'; P.frame = 0; P.t = 0; P.dur = null;
+  attackQueued = false;
+  P.target = null;                // パリィ判定は発動後 SHIELD.parryWindow 秒の間、毎フレーム行う
+}
+function endShield() {
+  P.target = null; P.phase = null; P.state = 'idle'; setAnim('idles');
+  if (inputDir() !== 0) { P.state = 'run'; setAnim('player_run'); }
+}
+// phase: intro(1~2コマ) → hold(2コマ目を1秒) → end(4~7コマ・動けない)
+//        パリィ成立時: intro → freeze(3コマ目0.2秒・ハイライト) → 弾を反射/突進を防ぐ → end(無敵0.5秒)
+function updateShield(dt, dir) {
+  jumpPressed = false; attackQueued = false;
+  if (P.phase === 'freeze') {
+    P.t += dt;
+    if (P.t >= SHIELD.parryFreeze) {
+      resolveParry(P.target, 0, P.auto ? 'auto' : 'shield');   // 弾なら敵へ/元の方向へ返す、突進中の敵ならダメージ
+      P.target = null; P.auto = false; P.autoInv = false;      // ← 演出後に無敵(autoInv)解除
+      P.invT = SHIELD.invincible;
+      P.phase = 'end'; P.t = 0; P.frame = 3;
+    }
+    return;
+  }
+  if ((P.phase === 'intro' || P.phase === 'hold') && dir !== 0) {
+    P.facing = dir;
+    moveX(dir * moveSpd() * SHIELD.moveRate * dt);
+  }
+  if (!standing()) { P.target = null; P.vy = 0; startFall(); return; }
+  checkEdges();
+  P.t += dt;
+  const fd = CONFIG.frameDelay;
+  if (P.phase === 'intro') {
+    if (P.t <= SHIELD.parryWindow) {   // 発動から0.2秒間: 前方に弾/突進が来たら即パリィ(保持時間は無視)
+      const t = findParryTarget();
+      if (t) { P.target = t; P.phase = 'freeze'; P.t = 0; P.frame = 2; parryFx(t.x, t.y, 'shield'); sfx('parry'); return; }
+    }
+    P.frame = P.t < fd ? 0 : 1;
+    if (P.t >= fd * 2) { P.phase = 'hold'; P.t = 0; P.frame = 1; }
+  } else if (P.phase === 'hold') {
+    P.frame = 1;
+    if (P.t >= SHIELD.hold) { P.phase = 'end'; P.t = 0; P.frame = 3; }
+  } else if (P.phase === 'end') {
+    P.frame = 3 + Math.floor(P.t / fd);
+    if (P.frame > 6) endShield();
+  }
+}
+
+// ================= 敵(本) =================
+const ENEMY = {
+  scale: 2.8, hitW: 44, hitH: 34, hp: 20,          // hitW/H は元画像px基準
+  flySpeed: 70, drift: 40, bob: 50,                // 浮遊
+  attackInterval: 3, flipTime: 0.5, tick: 1 / 60,
+  preFireTicks: 12, postFireTicks: 12,             // 反転後→発射 / 発射後→戻り始め
+  gravity: 1100, downTime: 2,
+  bulletCount: 3, bulletScale: 2.5, bulletR: 12, bulletDmg: 20,
+  rise: 0.5, riseSpeed: 200, homing: 120, spread: 70, fallAccel: 500, maxFall: 600,
+  reflectSpeed: 450, reflectDmg: 6,                // 弾き返した弾が敵に当たった時のダメージ
+  swordDmg: 4,                                     // スタン中(落下・倒れ中)に剣が当たった時のダメージ
+  hitFlash: 0.15,
+  vanishTime: 1,    // 出現・消滅にかける秒数
+  spinTurns: 2,     // その間の回転数(整数にすると出現後の向きが揃う)
+  // ---- 突進攻撃 ----
+  chargeHp: 10,            // この HP 以下で突進するようになる
+  chargeEnemyRate: 1 / 2, // 突進する個体になる確率(スポーン時に決定)
+  chargeProb: 100,        // 攻撃タイミングで突進を選ぶ確率(稀に)
+  chargeTime: 3,          // 溜め秒数(その場で静止)
+  chargeSpeed: 800,       // 突進速度(px/秒)
+  chargeRange: 1000,      // 最大突進距離(px)
+  chargeDmg: 40,          // プレイヤーに当たった時のダメージ
+  chargeParryDmg: 3,      // パリィ成功時に敵へ入るダメージ
+  chargeGhostGap: 0.1,    // 残像を出す間隔(秒)
+  chargeGhostLife: 0.35,  // 残像の寿命(秒)
+};
+// ---- 敵2(ナイフ) ----
+const KNIFE = {
+  hp: 30, hitW: 37, hitH: 40, chargeW: 42, chargeH: 28,   // 通常時 / 突進時の当たり判定(元画像px)
+  animDelay: 20 / 60,                                      // アニメのコマ送り間隔(常にループ)
+  firstAttack: 1, attackInterval: 3,                      // 出現後 / 以降の攻撃間隔(秒)
+  count: 1, ringMin: 260, ringMax: 500,                   // プレイヤーからナイフ出現位置までの距離
+  warn: 1, lockTime: 0.25,                                // 予告時間 / 発射直前に狙いを固定する時間
+  speed: 650, scale: 2.5, r: 16, dmg: 20, reflectDmg: 6,  // ナイフ弾
+  chargeTime: 3, chargeSpeed: 800, chargeRange: 1000, chargeDmg: 30,
+  parryDmg: 8, downTime: 3,                               // 突進を盾で返した時のダメージ / 隙の秒数
+};
+// ---- 敵3(フィスト) ----
+const FIST = { hp: 15, hitW: 57, hitH: 40, speed: 600, dmg: 10, parryDmg: 3,
+  chargeInterval: 4, chargeTime: 1.5, chargeSpeed: 800, chargeRange: 1000, chargeDmg: 20 };   // 突進の間隔 / 溜め / 速度 / 距離 / ダメージ
+const playerAtk = () => ENEMY.swordDmg + atkBonus();   // 他の敵に当てるダメージ(プレイヤーの現在の攻撃力)
+const ATTACK = {
+  reach: 1.0, up: 1.5, active: [[1, 3], [6, 8], [10, 12]],   // 弾き判定が有効なコマ(要調整)
+  airActive: [[0, 3], [4, 12]],   // ジャンプ攻撃: 1回目=1~4コマ / 2回目=5~最後
+  airScale: 2.2,                  // ヒットボックスの何倍まで判定を広げるか
+  airBonus: 3,                    // 通常攻撃より高いダメージ
+};
+let airStage = 0;                 // ジャンプ攻撃の段階(0=なし, 1, 2)
+const enemies = [];
+// 敵の種類ごとの当たり判定(ナイフは突進中だけ小さな専用サイズ)
+const eW = e => ((e && e.type === 'knife') ? (e.state === 'charge' ? KNIFE.chargeW : KNIFE.hitW)
+                : (e && e.type === 'fist') ? FIST.hitW : ENEMY.hitW) * ENEMY.scale;
+const eH = e => ((e && e.type === 'knife') ? (e.state === 'charge' ? KNIFE.chargeH : KNIFE.hitH)
+                : (e && e.type === 'fist') ? FIST.hitH : ENEMY.hitH) * ENEMY.scale;
+const enemyRect = e => ({ x: e.x - eW(e) / 2, y: e.y - eH(e) / 2, w: eW(e), h: eH(e) });   // 弾き返された弾が当たる
+const enemyHittable = e => e.state === 'fly' || e.state === 'attack' || e.state === 'charge' || e.state === 'bounce';
+const enemyStunned = e => e.state === 'fall' || e.state === 'down';                            // 剣が当たる
+const chargeDashing = e => e.map === curName && e.state === 'charge' && e.phase === 'dash';    // パリィできる突進中
+const fistIncoming = e => e.map === curName && e.type === 'fist' && e.state === 'bounce' && e.phase === 'back';
+const parryable = e => chargeDashing(e) || fistIncoming(e);
+// 向き: 画像は基本右向き。ナイフの突進中はプレイヤーが左なら反転。faceLeft の絵は逆にする
+const enemyFace = (e, key = enemySheet(e)) => {
+  const dir = (e.type === 'knife' && e.state === 'charge')
+    ? (e.phase === 'dash' ? (e.dx < 0 ? -1 : 1) : (P.x < e.x ? -1 : 1))
+    : (e.vx < 0 ? -1 : 1);
+  return SHEETS[key].faceLeft ? -dir : dir;   // 元絵が左向きなら逆にする
+};
+const enemySheet = e => e.type === 'knife' ? (e.state === 'charge' ? 'enemy_knife_parry' : 'enemy_knife')
+                      : e.type === 'fist' ? 'enemy_fist' : 'enemy_book';
+const knifeFrame = (e, key) => Math.floor((e.animT || 0) / KNIFE.animDelay) % SHEETS[key].frames;   // 常にループ
+
+function rectHit(cx, cy, w, h) {   // 中心基準の矩形 vs 手前レイヤーの固いタイル
+  const T = sol.T;
+  const c0 = Math.floor((cx - w / 2 - sol.ox) / T), c1 = Math.floor((cx + w / 2 - 0.001 - sol.ox) / T);
+  const r0 = Math.floor((cy - h / 2 - sol.oy) / T), r1 = Math.floor((cy + h / 2 - 0.001 - sol.oy) / T);
+  for (let r = r0; r <= r1; r++) { const row = sol.g[r]; if (!row) continue; for (let c = c0; c <= c1; c++) if (row[c]) return true; }
+  return false;
+}
+function spawnEnemy(type = 'book') {
+  const kn = type === 'knife', fi = type === 'fist';
+  const dim = kn ? KNIFE : fi ? FIST : ENEMY;
+  const w = dim.hitW * ENEMY.scale, h = dim.hitH * ENEMY.scale;
+  for (let i = 0; i < 300; i++) {
+    const x = rand(w, STAGE_W - w), y = rand(h, STAGE_H * 0.5);
+    if (rectHit(x, y, w, h)) continue;
+    const hp = dim.hp;
+    const en = { type, map: curName, x, y, vx: (Math.random() < 0.5 ? -1 : 1) * ENEMY.flySpeed, vy: rand(-1, 1) * ENEMY.drift,
+      hp, maxHp: hp, state: 'spawn', frame: 0, t: 0, animT: 0, timer: kn ? KNIFE.firstAttack : fi ? FIST.chargeInterval : ENEMY.attackInterval,
+      flipY: 1, phase: null, pt: 0, flash: 0, swing: -1, anim: 0,
+      canCharge: type === 'book' && Math.random() < ENEMY.chargeEnemyRate,
+      ghosts: [], dashHit: false, ang: 0, hitSet: null, stuck: 0 };
+    enemies.push(en);
+    return en;
+  }
+  return null;
+}
+
+function startVanish(e) {
+  sfx('defeat');   // 敵死亡
+  for (let i = bullets.length - 1; i >= 0; i--) if (bullets[i].owner === e) bullets.splice(i, 1);   // 自分が出した弾を消す
+  e.state = 'vanish'; e.frame = 0; e.flipY = 1; e.vy = 0; e.phase = null; e.anim = 0;
+  dropItem(e);   // 倒された時に確率で回復アイテムをドロップ
+}
+
+// ---- 敵3(フィスト): 攻撃されると跳ね返りを繰り返す ----
+function launchFist(e, toPlayer) {   // toPlayer=false: プレイヤーと反対へ / true: プレイヤーへ
+  const s = toPlayer ? 1 : -1;
+  e.ang = Math.atan2(s * ((P.y - hbH() / 2) - e.y), s * (P.x - e.x));   // 画像は右向き、角度だけ変える(ナイフと同じ)
+  e.vx = Math.cos(e.ang) * FIST.speed; e.vy = Math.sin(e.ang) * FIST.speed;
+  e.state = 'bounce'; e.phase = toPlayer ? 'back' : 'away';
+  e.hitSet = new Set(); e.dashHit = false; e.frame = 0; e.flipY = 1;
+}
+function hitFist(e, n) {   // プレイヤーの攻撃などを受けた時
+  e.hp -= n; e.flash = ENEMY.hitFlash; dmgPop(e, n);
+  if (e.hp <= 0) { startVanish(e); return; }
+  e.stuck = 0; launchFist(e, false);
+}
+function fistToFly(e) {
+  e.state = 'fly'; e.phase = null; e.frame = 0; e.stuck = 0; e.timer = FIST.chargeInterval;
+  e.vx = (Math.sign(Math.cos(e.ang)) || 1) * ENEMY.flySpeed; e.vy = rand(-1, 1) * ENEMY.drift;
+}
+function fistBounce(e, dt) {
+  const w = eW(e), h = eH(e), step = FIST.speed * dt;
+  const nx = e.x + Math.cos(e.ang) * step, ny = e.y + Math.sin(e.ang) * step;
+  if (rectHit(nx, ny, w, h) || nx < w / 2 || nx > STAGE_W - w / 2 || ny < h / 2 || ny > STAGE_H - h / 2) {
+    // 壁: プレイヤーの方向へもう一度跳ね返る(壁に挟まって動けない時は浮遊に戻る)
+    if (++e.stuck >= 3) { fistToFly(e); return; }
+    launchFist(e, true);
+    return;
+  }
+  e.x = nx; e.y = ny; e.stuck = 0;
+  // 飛んでいる間、他の敵にぶつかるとプレイヤーの現在の攻撃力でダメージ(1回の跳ね返りにつき1回)
+  for (const o of enemies) {
+    if (o === e || o.type === 'fist' || o.map !== curName || e.hitSet.has(o)) continue;
+    const hittable = enemyHittable(o), stunned = enemyStunned(o);
+    if (!(hittable || stunned) || !rectOverlap(enemyRect(e), enemyRect(o))) continue;
+    e.hitSet.add(o);
+    if (hittable) hitEnemy(o, playerAtk()); else slashEnemy(o, playerAtk());
+  }
+  // プレイヤーへ向かっている間だけ接触ダメージ10
+  if (e.phase === 'back' && rectOverlap(enemyRect(e), hitboxRect())) {
+    if (damagePlayer(FIST.dmg, Math.sign(e.x - P.x) || P.facing, e)) fistToFly(e);
+  }
+}
+function hitEnemy(e, n) {
+  if (e.type === 'fist') { hitFist(e, n); return; }
+  if (e.type === 'knife') for (let i = bullets.length - 1; i >= 0; i--) if (bullets[i].owner === e && bullets[i].aim) bullets.splice(i, 1);   // 予告中のナイフを消す
+  e.hp -= n; e.flash = ENEMY.hitFlash; dmgPop(e, n);
+  if (e.hp <= 0) { startVanish(e); return; }
+  e.state = 'fall'; e.frame = 0; e.flipY = 1; e.vy = 0; e.phase = null;
+}
+function dmgPop(e, n) {   // 与えたダメージを敵の頭上に表示
+  fx.push({ k: 'pop', x: e.x, y: e.y - eH(e) / 2, t: 0, d: 0.7, text: String(n), color: '#F54927' });
+}
+function slashEnemy(e, n) {
+  e.hp -= n; e.flash = ENEMY.hitFlash; dmgPop(e, n);
+  if (e.hp <= 0) startVanish(e);
+}
+function fireBooks(e) {
+  const dir = Math.sign(P.x - e.x) || 1, n = ENEMY.bulletCount;
+  for (let i = 0; i < n; i++) {
+    const k = i - (n - 1) / 2;
+    bullets.push({ kind: 'book', x: e.x, y: e.y, vx: dir * 40 + k * ENEMY.spread, vy: -ENEMY.riseSpeed,
+      r: ENEMY.bulletR, dmg: ENEMY.bulletDmg, reflected: false, age: 0 });
+  }
+}
+function startEnemyAttack(e) { e.state = 'attack'; e.phase = 'in'; e.pt = 0; }
+
+// ---- 突進攻撃 ----
+function addGhost(e, x, y, life) {
+  const key = enemySheet(e);
+  const fr = e.type === 'knife' ? knifeFrame(e, key) : 0;
+  e.ghosts.push({ x, y, life, max: life, face: enemyFace(e), key, fr });
+}
+function aimDir(e) {   // 敵からプレイヤー胴体への単位ベクトル
+  const dx = P.x - e.x, dy = (P.y - hbH() / 2) - e.y, len = Math.hypot(dx, dy) || 1;
+  return { dx: dx / len, dy: dy / len };
+}
+function startCharge(e) {
+  e.state = 'charge'; e.phase = e.type === 'knife' ? 'spin' : 'wind';
+  e.pt = 0; e.anim = 0; e.ghostT = 0; e.dashHit = false;
+  e.frame = 0; e.flipY = 1; e.vx = (Math.sign(P.x - e.x) || 1) * ENEMY.flySpeed;
+}
+function enemyCharge(e, dt) {
+  const cfg = e.type === 'knife' ? KNIFE : e.type === 'fist' ? FIST : ENEMY;
+  if (e.phase === 'spin') {                         // spin が消えるまで待つ(下には parry 絵が見えている)
+    e.anim += dt; e.frame = 0; e.flipY = 1;
+    e.vx = (Math.sign(P.x - e.x) || 1) * ENEMY.flySpeed;   // 向きだけプレイヤーへ追従
+    if (e.anim >= ENEMY.vanishTime) { e.phase = 'wind'; e.pt = 0; e.ghostT = 0; }
+    return;
+  }
+  e.pt += dt; e.frame = 0; e.flipY = 1;
+  if (e.phase === 'wind') {                         // 溜め: その場から動かず、後ろに残像を出し続ける
+      const a = aimDir(e);
+    if (e.type === 'fist') e.ang = Math.atan2(a.dy, a.dx);   // 突進方向へ回転
+    e.vx = (Math.sign(a.dx) || 1) * ENEMY.flySpeed; // 向きだけプレイヤーへ追従
+    e.ghostT -= dt;
+    if (e.ghostT <= 0) {
+      e.ghostT = ENEMY.chargeGhostGap;
+      const d = rand(20, 90);
+      addGhost(e, e.x - a.dx * d, e.y - a.dy * d + rand(-10, 10), ENEMY.chargeGhostLife * 1.5);   // 突進方向の反対側
+    }
+    if (e.pt >= cfg.chargeTime) { e.dx = a.dx; e.dy = a.dy; e.phase = 'dash'; e.pt = 0; e.dist = 0; e.ghostT = 0; }
+    return;
+  }
+  // 突進: 溜め終わりの方向へ直進(途中で追尾しない)
+  const w = eW(e), h = eH(e), step = cfg.chargeSpeed * dt;
+  let stop = false;
+  const nx = e.x + e.dx * step, ny = e.y + e.dy * step;
+  if (rectHit(nx, ny, w, h)) stop = true; else { e.x = nx; e.y = ny; }
+  e.dist += step;
+  e.ghostT -= dt;
+  if (e.ghostT <= 0) { e.ghostT = ENEMY.chargeGhostGap / 3; addGhost(e, e.x, e.y, ENEMY.chargeGhostLife); }
+  if (!e.dashHit && rectOverlap(enemyRect(e), hitboxRect())) {
+    if (damagePlayer(cfg.chargeDmg, Math.sign(e.x - P.x) || P.facing, e)) e.dashHit = true;   // 1回の突進で1ヒット
+  }
+  if (e.x < w / 2 || e.x > STAGE_W - w / 2 || e.y < h / 2 || e.y > STAGE_H - h / 2 || e.dist >= cfg.chargeRange) stop = true;
+  if (stop) {
+    e.state = 'fly'; e.phase = null; e.frame = 2; e.vy = 0;   // 先に通常状態へ(通常サイズで判定するため)
+    const w2 = eW(e), h2 = eH(e);
+    const clampE = () => {
+      e.x = Math.max(w2 / 2, Math.min(STAGE_W - w2 / 2, e.x));
+      e.y = Math.max(h2 / 2, Math.min(STAGE_H - h2 / 2, e.y));
+    };
+    clampE();
+    // 壁にめり込んでいたら、突進してきた方向と逆へ押し戻す
+    for (let i = 0; i < 300 && rectHit(e.x, e.y, w2, h2); i++) {
+      e.x -= e.dx * 4; e.y -= e.dy * 4; clampE();
+    }
+    e.vx = (Math.sign(e.dx) || 1) * ENEMY.flySpeed;
+      e.timer = e.type === 'knife' ? KNIFE.attackInterval : e.type === 'fist' ? FIST.chargeInterval : ENEMY.attackInterval;
+  }
+}
+function parryCharge(e, bonus = 0) { e.swing = swingId; hitEnemy(e, (e.type === 'knife' ? KNIFE.parryDmg : ENEMY.chargeParryDmg) + bonus); }   // 突進を止めてダメージ(+ボーナス)
+// パリィ対象が弾なら反射、突進中の敵ならダメージ。kind: 'shield' | 'air' (TP増加量の区別)
+function parryFist(e, bonus = 0) { e.swing = swingId; hitFist(e, FIST.parryDmg + bonus); }   // 反対方向へ弾き返す
+const parryAny = (e, bonus = 0) => fistIncoming(e) ? parryFist(e, bonus) : parryCharge(e, bonus);
+
+function resolveParry(t, bonus = 0, kind = 'shield') {
+  if (!t) return;
+  bonus += atkBonus();
+  P.boostT = BOOST.time;
+  if (kind !== 'auto') gainTp(kind === 'air' ? TP.gainAir : TP.gainShield);
+  if (bullets.includes(t)) reflectBullet(t, bonus);
+  else if (enemies.includes(t) && parryable(t)) parryAny(t, bonus);
+}
+function enemyFly(e, dt) {
+  const w = eW(e), h = eH(e);
+  for (let i = 0; i < 200 && rectHit(e.x, e.y, w, h); i++) e.y -= 4;   // めり込んでいたら上へ脱出
+  e.t += dt;
+  e.x += e.vx * dt;
+  if (e.x < w / 2 || e.x > STAGE_W - w / 2 || rectHit(e.x, e.y, w, h)) { e.x -= e.vx * dt; e.vx = -e.vx; }   // 手前レイヤー・画面端で反射
+  const dy = (e.vy + Math.cos(e.t * 3) * ENEMY.bob) * dt;
+  e.y += dy;
+  if (e.y < h / 2 || e.y > STAGE_H - h / 2 || rectHit(e.x, e.y, w, h)) { e.y -= dy; e.vy = -e.vy; }
+  e.frame = 2;
+  e.timer -= dt;
+  if (e.timer <= 0) {
+    if (e.type === 'fist') { startCharge(e); return; }
+    if (e.type === 'knife') {
+      if (bullets.some(b => b.owner === e)) e.timer = 0.5;          // 前のナイフが残っている間は待つ
+      else if (e.nextCharge) { e.nextCharge = false; startCharge(e); }   // ナイフ攻撃 → 突進 を交互に
+      else { spawnKnives(e); e.nextCharge = true; e.timer = KNIFE.attackInterval; }
+    }
+    else if (e.canCharge && e.hp <= ENEMY.chargeHp && Math.random() < ENEMY.chargeProb) startCharge(e);   // HP以下の突進個体は稀に突進
+    else startEnemyAttack(e);
+  }
+}
+function enemyAttack(e, dt) {
+  const F = ENEMY.flipTime, tk = ENEMY.tick;
+  e.pt += dt;
+  if (e.phase === 'in') {                       // 0.5秒かけて上下反転、途中で1枚目へ
+    const p = Math.min(1, e.pt / F);
+    e.flipY = Math.cos(Math.PI * p); e.frame = p < 0.5 ? 2 : 0;
+    if (e.pt >= F) { e.phase = 'pre'; e.pt = 0; e.flipY = -1; }
+  } else if (e.phase === 'pre') {               // 12tick後に2枚目+発射
+    e.frame = 0;
+    if (e.pt >= ENEMY.preFireTicks * tk) { e.phase = 'post'; e.pt = 0; e.frame = 1; fireBooks(e); }
+  } else if (e.phase === 'post') {
+    if (e.pt >= ENEMY.postFireTicks * tk) { e.phase = 'out'; e.pt = 0; e.frame = 2; }
+  } else if (e.phase === 'out') {               // 3枚目に戻りつつ0.5秒で反転を戻す
+    const p = Math.min(1, e.pt / F);
+    e.flipY = -Math.cos(Math.PI * p);
+    if (e.pt >= F) { e.state = 'fly'; e.phase = null; e.flipY = 1; e.timer = ENEMY.attackInterval; }
+  }
+}
+function enemyFall(e, dt) {
+  const h = eH(e), T = sol.T;
+  e.vy += ENEMY.gravity * dt; e.y += e.vy * dt;
+  let landed = false;
+  if (rectHit(e.x, e.y, eW(e), h)) { e.y = sol.oy + Math.floor((e.y + h / 2 - sol.oy - 0.001) / T) * T - h / 2; landed = true; }
+  else if (hasFloor() && e.y + h / 2 > STAGE_H) { e.y = STAGE_H - h / 2; landed = true; }
+  else if (e.y - h / 2 > STAGE_H) { e.state = 'dead'; return; }    // 地面が無ければ消える
+  if (landed) { e.state = 'down'; e.vy = 0; e.timer = e.type === 'knife' ? KNIFE.downTime : ENEMY.downTime; e.frame = 0; }
+}
+function updateEnemies(dt) {
+  for (const e of enemies) {
+    if (e.map !== curName) continue;                // プレイヤーのいるマップでのみ動く
+    e.animT = (e.animT || 0) + dt;                  // アニメ時計(パリィ演出中は updateEnemies が止まるので一緒に止まる)
+    if (e.flash > 0) e.flash = Math.max(0, e.flash - dt);
+    for (let i = e.ghosts.length - 1; i >= 0; i--) if ((e.ghosts[i].life -= dt) <= 0) e.ghosts.splice(i, 1);   // 残像の寿命
+    if (e.state === 'spawn') {
+      e.anim += dt; e.frame = 0;
+      const p = Math.min(1, e.anim / ENEMY.vanishTime);
+      e.flipY = Math.cos(Math.PI * 2 * ENEMY.spinTurns * p);
+      if (p >= 1) { e.state = 'fly'; e.frame = 2; e.anim = 0; e.flipY = 1; }
+    } else if (e.state === 'vanish') {
+      e.anim += dt; e.frame = 0;
+      const p = Math.min(1, e.anim / ENEMY.vanishTime);
+      e.flipY = Math.cos(Math.PI * 2 * ENEMY.spinTurns * p);
+      if (p >= 1) e.state = 'dead';
+    } else if (e.state === 'fly') enemyFly(e, dt);
+    else if (e.state === 'attack') enemyAttack(e, dt);
+    else if (e.state === 'charge') enemyCharge(e, dt);
+  else if (e.state === 'bounce') fistBounce(e, dt);
+    else if (e.state === 'fall') enemyFall(e, dt);
+    else if (e.state === 'down') {
+      e.timer -= dt;
+      if (e.timer <= 0) { e.state = 'fly'; e.frame = 2; e.vy = -30; e.timer = e.type === 'knife' ? KNIFE.attackInterval : ENEMY.attackInterval; }
+    }
+  }
+  for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].state === 'dead') enemies.splice(i, 1);
+}
+function drawEnemy(g, e) {
+  const key = enemySheet(e), s = SHEETS[key], S = ENEMY.scale, dw = s.w * S, dh = s.h * S;
+  for (const gh of e.ghosts) {                       // 残像(突進の溜め・突進中)
+    const gk = gh.key || key, gs = SHEETS[gk], f = frameRect(gs, Math.min(gh.fr || 0, gs.frames - 1));
+    g.save(); g.imageSmoothingEnabled = false;
+    g.globalAlpha = 0.5 * Math.max(0, gh.life) / gh.max;
+    g.translate(gh.x, gh.y); g.scale(gh.face, 1);
+    g.drawImage(getImg(gk), f.sx, f.sy, gs.w, gs.h, -gs.w * S / 2, -gs.h * S / 2, gs.w * S, gs.h * S);
+    g.restore();
+  }
+  let fr = e.frame;
+  if (e.type === 'knife') fr = knifeFrame(e, key);   // ナイフは状態に関係なく常にループ
+  const { sx, sy } = frameRect(s, Math.min(fr, s.frames - 1));
+  g.save(); g.imageSmoothingEnabled = false;
+  if (e.flash > 0 && Math.floor(e.flash * 60) % 2 === 0) g.globalAlpha = 0.4;   // 被弾時の点滅
+  let kx = 1;
+  if (e.state === 'spawn' || e.state === 'vanish') {
+    const p = Math.min(1, e.anim / ENEMY.vanishTime);
+    kx = e.state === 'spawn' ? p : 1 - p;           // 出現:細→太 / 消滅:太→細
+  }
+     g.translate(e.x, e.y);
+   const rot = e.type === 'fist' && (e.state === 'bounce' || e.state === 'charge');
+  if (rot) g.rotate(e.ang);                                   // 右向き画像を飛んでいく角度に回す
+  g.scale((rot ? 1 : enemyFace(e)) * Math.max(kx, 0.02), Math.abs(e.flipY) < 0.02 ? 0.02 : e.flipY);
+  g.drawImage(getImg(key), sx, sy, s.w, s.h, -dw / 2, -dh / 2, dw, dh);
+  g.restore();
+  // parry(本体)の上に spin を重ねて、1秒かけて消す
+  if (e.type === 'knife' && e.state === 'charge' && e.phase === 'spin') {
+    const p = Math.min(1, e.anim / ENEMY.vanishTime);
+    const im = getImg('enemy_knife_spin');
+    const iw = im.naturalWidth || im.width, ih = im.naturalHeight || im.height;   // 画像の実サイズで描く
+    const fy = Math.cos(Math.PI * 2 * ENEMY.spinTurns * p);                       // 上下回転
+    g.save(); g.imageSmoothingEnabled = false;
+    if (e.flash > 0 && Math.floor(e.flash * 60) % 2 === 0) g.globalAlpha = 0.4;
+    g.translate(e.x, e.y);
+    g.scale(enemyFace(e, 'enemy_knife_spin') * Math.max(1 - p, 0.02), Math.abs(fy) < 0.02 ? 0.02 : fy);   // 横幅は太→細
+    g.drawImage(im, 0, 0, iw, ih, -iw * S / 2, -ih * S / 2, iw * S, ih * S);
+    g.restore();
+  }
+
+  if (e.hp < e.maxHp && e.state !== 'vanish' && e.state !== 'spawn') {
+    g.fillStyle = '#000a'; g.fillRect(e.x - 31, e.y - dh / 2 - 12, 62, 7);
+    g.fillStyle = '#ff5060'; g.fillRect(e.x - 30, e.y - dh / 2 - 11, 60 * Math.max(0, e.hp) / e.maxHp, 5);
+  }
+  if (debug) { const r = enemyRect(e); g.strokeStyle = '#ffd000'; g.strokeRect(r.x, r.y, r.w, r.h); }
+}
+function drawEnemies(g) {
+  for (const e of enemies) if (e.map === curName && e.state !== 'dead') drawEnemy(g, e);
+}
+
+// ---- 弾の挙動 / 弾き返し ----
+function bookMotion(b, dt) {   // 1秒上昇(減速・プレイヤー方向へ少し寄る)→下降(加速)
+  b.age += dt;
+  if (b.age < ENEMY.rise) {
+    b.vy = -ENEMY.riseSpeed * (1 - b.age / ENEMY.rise);
+    b.vx += Math.sign(P.x - b.x) * ENEMY.homing * dt;
+  } else b.vy = Math.min(ENEMY.maxFall, (b.age - ENEMY.rise) * ENEMY.fallAccel);
+}
+// ---- ナイフ(敵2の弾) ----
+function spawnKnives(e) {   // プレイヤーの「真横〜上」にだけ出す(予告線つき・1秒後に発射)
+  const cx = P.x, cy = P.y - hbH() / 2;
+  for (let i = 0; i < KNIFE.count; i++) {
+    let x = cx, y = cy;
+    for (let k = 0; k < 30; k++) {
+      const a = rand(Math.PI, Math.PI * 2), d = rand(KNIFE.ringMin, KNIFE.ringMax);   // 上半分のみ
+      x = cx + Math.cos(a) * d; y = cy + Math.sin(a) * d;
+      if (x > 30 && x < STAGE_W - 30 && y > 30 && y < STAGE_H - 30) break;
+    }
+    x = Math.max(30, Math.min(STAGE_W - 30, x));
+    y = Math.min(cy, Math.max(30, y));   // 念のため: プレイヤーの胴体中心より下には出さない
+    bullets.push({ kind: 'knife', x, y, vx: 0, vy: 0, r: KNIFE.r, dmg: KNIFE.dmg, reflected: false,
+      age: 0, aim: true, shieldOnly: true, owner: e, ang: Math.atan2(cy - y, cx - x) });
+  }
+}
+function knifeMotion(b, dt) {
+  b.age += dt;
+  if (!b.aim) return;
+  if (b.age < KNIFE.warn - KNIFE.lockTime) b.ang = Math.atan2((P.y - hbH() / 2) - b.y, P.x - b.x);   // 発射直前まで追従
+  if (b.age >= KNIFE.warn) { b.aim = false; b.vx = Math.cos(b.ang) * KNIFE.speed; b.vy = Math.sin(b.ang) * KNIFE.speed; }
+}
+function reflectBullet(b, bonus = 0) {
+  b.reflected = true; b.dmg = (b.kind === 'knife' ? KNIFE.reflectDmg : ENEMY.reflectDmg) + bonus;
+  let best = null, bd = Infinity;
+  for (const e of enemies) {
+    if (e.map !== curName || !enemyHittable(e)) continue;
+    const d = Math.hypot(e.x - b.x, e.y - b.y); if (d < bd) { bd = d; best = e; }
+  }
+  if ((b.kind === 'book' || b.kind === 'knife') && best) {
+    const dx = best.x - b.x, dy = best.y - b.y, len = Math.hypot(dx, dy) || 1;
+    b.vx = dx / len * ENEMY.reflectSpeed; b.vy = dy / len * ENEMY.reflectSpeed;
+  } else { b.vx = -b.vx; b.vy = -b.vy; }
+}
+function attackActive() {
+  if (P.state === 'attack' && P.sheet === 'attack') {
+    const r = ATTACK.active[combo.stage - 1]; return !!r && P.frame >= r[0] && P.frame <= r[1];
+  }
+  if (P.airAttack && P.sheet === 'jumpsword') {
+    const r = ATTACK.airActive[airStage - 1];
+    return !!r && P.frame >= r[0] && P.frame <= r[1];
+  }
+  return false;
+}
+function attackZone() {
+  if (P.airAttack) {   // ジャンプ攻撃: ヒットボックス中心から全方向に拡大
+    const w = hbW() * ATTACK.airScale, h = hbH() * ATTACK.airScale;
+    return { x: P.x - w / 2, y: P.y - hbH() / 2 - h / 2, w, h };
+  }
+  const w = hbW() * ATTACK.reach, h = hbH() * ATTACK.up;
+  return { x: P.facing >= 0 ? P.x : P.x - w, y: P.y - h, w, h };
+}
+function deflectByAttack() {
+  const z = attackZone(), bonus = (P.airAttack ? ATTACK.airBonus : 0) + atkBonus();
+  // 突進中の敵、およびこちらへ向かってくるフィスト(ナイフ本体は盾のみなので除外)
+  const dashers = enemies.filter(e => ((chargeDashing(e) && e.type !== 'knife') || fistIncoming(e)) && rectOverlap(z, enemyRect(e)));
+  if (P.airAttack) {
+    // 範囲内で最も近い弾/突進中の敵/フィストをパリィ対象にする
+    const cx = P.x, cy = P.y - hbH() / 2;
+    let target = null, bd = Infinity;
+    for (const b of bullets) {
+      if (b.reflected || b.shieldOnly || !circleRect(b, z)) continue;
+      const d = Math.hypot(b.x - cx, b.y - cy);
+      if (d < bd) { bd = d; target = b; }
+    }
+    for (const e of dashers) {
+      const d = Math.hypot(e.x - cx, e.y - cy);
+      if (d < bd) { bd = d; target = e; }
+    }
+    if (target) {
+      P.target = target; P.airFreeze = SHIELD.parryFreeze;
+      parryFx(target.x, target.y, 'air');
+      // 同時に範囲内にいた他の弾・敵は即処理
+     for (const b of bullets) if (b !== target && !b.reflected && !b.shieldOnly && circleRect(b, z)) reflectBullet(b, bonus);
+for (const e of dashers) if (e !== target) parryAny(e, bonus);
+    }
+  } else {
+    let n = 0;   // 地上の剣パリィ成功数(1回でもTP加算)
+    for (const b of bullets) if (!b.reflected && !b.shieldOnly && circleRect(b, z)) { reflectBullet(b, bonus); n++; }
+    for (const e of dashers) { parryAny(e, bonus); n++; }
+    if (n) gainTp(TP.gainSword);
+  }
+  // 剣が当たったフィストは反対方向へ跳ね返る(1振り1回)
+  for (const e of enemies) {
+    if (e.type !== 'fist' || e.map !== curName || e.swing === swingId) continue;
+    if ((e.state === 'fly' || e.state === 'bounce') && rectOverlap(z, enemyRect(e))) {
+      e.swing = swingId; hitFist(e, ENEMY.swordDmg + bonus);
+    }
+  }
+  // スタン中(落下・倒れ中)の敵への斬撃
+  for (const e of enemies) {
+    if (e.map !== curName || !enemyStunned(e) || e.swing === swingId) continue;
+   if (rectOverlap(z, enemyRect(e))) { e.swing = swingId; slashEnemy(e, ENEMY.swordDmg + bonus); }
+  }
+}
+// ---- パリィ演出(プレイヤーと対象の弾/敵だけ明るく) ----
+const dimEl = document.getElementById('dim');
+const spotCv = document.getElementById('spot'), sg = spotCv.getContext('2d');
+function drawSprite(g) {
+  const s = SHEETS[P.sheet], f = Math.min(P.frame, s.frames - 1), { sx, sy } = frameRect(s, f);
+  const dw = s.w * CONFIG.scale, dh = s.h * CONFIG.scale, A = imageAnchor();
+  g.save();
+  g.translate(A.cx, A.bottom);
+  g.scale(P.facing < 0 ? -1 : 1, 1);
+  g.drawImage(getImg(P.sheet), sx, sy, s.w, s.h, -dw / 2, -dh, dw, dh);
+  g.restore();
+}
+function drawSpot() {
+  sg.clearRect(0, 0, spotCv.width, spotCv.height);
+  const on = isFrozen();
+  dimEl.style.opacity = on ? 1 : 0;
+  if (!on || !imagesReady) return;
+  sg.imageSmoothingEnabled = false;
+  drawFx(sg);                      // ← 追加(暗転の上にエフェクトを描く)
+  drawSprite(sg);
+  if (P.target && bullets.includes(P.target)) drawBullet(sg, P.target, true);
+  if (P.target && enemies.includes(P.target)) drawEnemy(sg, P.target);
+}
+document.getElementById('spawnBtn').addEventListener('click', e => { spawnBullet(); e.currentTarget.blur(); });
+
+// ================= 背景の描画 =================
+function drawScrollingLayer(layer, dt) {
+  const img = layer.img;
+  if (!(img.complete && img.naturalWidth > 0)) return;
+  const scale = canvas.height / img.naturalHeight, w = img.naturalWidth * scale, h = canvas.height;
+  layer.x -= layer.speed * dt;
+  if (layer.x <= -w) layer.x += w;
+  if (layer.x > 0) layer.x -= w;
+  for (let x = layer.x; x < canvas.width; x += w) ctx.drawImage(img, x, 0, w, h);
+}
+const topCanvas = document.getElementById('canvasTop'), topCtx = topCanvas.getContext('2d');
+const botCanvas = document.getElementById('canvasBottom'), botCtx = botCanvas.getContext('2d');
+function drawLayerBgBottom() {
+  const img = layerBg.img;
+  if (!(img.complete && img.naturalWidth > 0)) return;
+  const W = botCanvas.width, H = botCanvas.height, th = LAYERBG_SIZE.h;
+  const off = (((canvas.height - getLayerBgTopY()) % th) + th) % th;
+  botCtx.setTransform(1, 0, 0, 1, 0, 0);
+  botCtx.clearRect(0, 0, W, H);
+  botCtx.translate(layerBg.x, -off);
+  botCtx.fillStyle = botCtx.createPattern(img, 'repeat');
+  botCtx.fillRect(-layerBg.x, off, W + LAYERBG_SIZE.w, H);
+}
+function drawFlippedLayers() {
+  const W = topCanvas.width, H = topCanvas.height;
+  topCtx.setTransform(1, 0, 0, 1, 0, 0);
+  topCtx.clearRect(0, 0, W, H);
+  topCtx.setTransform(1, 0, 0, -1, 0, H);
+  for (const layer of layers) {
+    const img = layer.img;
+    if (!(img.complete && img.naturalWidth > 0)) continue;
+    const w = img.naturalWidth * (H / img.naturalHeight);
+    for (let x = layer.x; x < W; x += w) {
+      topCtx.save(); topCtx.translate(x + w, 0); topCtx.scale(-1, 1);
+      topCtx.drawImage(img, 0, 0, w, H); topCtx.restore();
+    }
+  }
+}
+function drawTileBand(tile, bandTopY) {
+  const img = tile.img;
+  if (!(img.complete && img.naturalWidth > 0)) return;
+  ctx.save(); ctx.translate(0, bandTopY);
+  ctx.fillStyle = ctx.createPattern(img, 'repeat-x');
+  ctx.fillRect(0, 0, canvas.width, TILE_SIZE.h);
+  ctx.restore();
+}
+
+// ================= メインループ =================
+let lastTime = performance.now();
+function render(time) {
+  requestAnimationFrame(render);                       // 先に次フレームを予約
+  const interval = CONFIG.fpsLimit > 0 ? 1000 / CONFIG.fpsLimit : 0;
+  const elapsed = time - lastTime;
+  if (elapsed < interval - 1) return;                  // まだ早いのでスキップ（-1ms は誤差の許容）
+  lastTime = interval ? time - (elapsed % interval) : time;   // 余りを持ち越して平均FPSを保つ
+
+  const dt = Math.min(0.05, elapsed / 1000);
+  const dt60 = dt * 60;
+  const dtw = (isFrozen() || pz.on) ? 0 : dt60;                   // パリィ演出中は背景・風を止める
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const layer of layers) drawScrollingLayer(layer, dtw);
+  drawFlippedLayers();
+  const tiles5 = tiles.find(t => t.img.src.endsWith('tiles5.png'));
+  drawTileBand(tiles5, getTileBandTopY(tiles5.offsetVar));
+  drawLayerBg(dtw);
+  drawLayerBgBottom();
+  for (const tile of tiles) { if (tile !== tiles5) drawTileBand(tile, getTileBandTopY(tile.offsetVar)); }
+  wctx.clearRect(0, 0, wcanvas.width, wcanvas.height);
+  updateAndDrawWind(dtw);
+  if (imagesReady && worldReady && !transitioning) { if (pz.on) pauseTick(dt); else { tickSkills(dt); update(dt); if (!isFrozen()) { updateZone(); updateEnemies(dt); updateBullets(dt); updateDrops(dt); updateChests(dt); } } }
+  if (!transitioning && fadeEl.style.opacity !== '0') fadeEl.style.opacity = 0;   // 暗転の取り残し防止
+updateBattleBg();
+  drawPlayer();
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
